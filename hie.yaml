@@ -1,0 +1,4 @@
+cradle:
+  cabal:
+    - path: "./src"
+      component: "Sync-Github-Issues:exe:Sync-Github-Issues"

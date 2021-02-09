@@ -1,0 +1,21 @@
+name:                Sync-Github-Issues
+version:             0.1.0.0
+#synopsis:
+#description:
+homepage:            https://github.com/spamviech/Sync-Github-Issues#readme
+license:             MIT
+author:              spamviech
+maintainer:          spamviech@web.de
+copyright:           2021 spamviech
+category:            Web
+extra-source-files:
+- README.md
+
+dependencies:
+- base >= 4.11 && < 5
+- github >= 0.26 && < 0.27
+
+executables:
+    Sync-Github-Issues:
+        source-dirs:      src
+        main:             Main.hs
