@@ -23,4 +23,6 @@ cabal.project.local~
 .ghc.environment.*
 
 .vscode/
+
 /.githubtoken
+/Issues/
