@@ -20,11 +20,17 @@ extra-source-files:
 executable Sync-Github-Issues
   main-is: Main.hs
   other-modules:
+      Token
+      Token.TH
       Paths_Sync_Github_Issues
   hs-source-dirs:
       src
   ghc-options: -Wall
   build-depends:
       base >=4.11 && <5
+    , bytestring >=0.10.12.1 && <0.12
     , github >=0.26 && <0.27
+    , template-haskell >=2.16 && <2.17
+    , th-lift-instances >=0.1.18 && <0.2
+    , vector >=0.12.2 && <0.13
   default-language: Haskell2010
