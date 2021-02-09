@@ -1,8 +1,8 @@
-name:                Sync-Github-Issues
+name:                Sync-GitHub-Issues
 version:             0.1.0.0
 #synopsis:
 #description:
-homepage:            https://github.com/spamviech/Sync-Github-Issues#readme
+homepage:            https://github.com/spamviech/Sync-GitHub-Issues#readme
 license:             MIT
 author:              spamviech
 maintainer:          spamviech@web.de

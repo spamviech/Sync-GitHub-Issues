@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 
-name:           Sync-Github-Issues
+name:           Sync-GitHub-Issues
 version:        0.1.0.0
 category:       Web
-homepage:       https://github.com/spamviech/Sync-Github-Issues#readme
+homepage:       https://github.com/spamviech/Sync-GitHub-Issues#readme
 author:         spamviech
 maintainer:     spamviech@web.de
 copyright:      2021 spamviech
@@ -22,7 +22,7 @@ executable Sync-Github-Issues
   other-modules:
       Token
       Token.TH
-      Paths_Sync_Github_Issues
+      Paths_Sync_GitHub_Issues
   hs-source-dirs:
       src
   ghc-options: -Wall
