@@ -20,6 +20,7 @@ extra-source-files:
 executable Sync-Github-Issues
   main-is: Main.hs
   other-modules:
+      ExitCodes
       Repository
       Token
       Token.TH

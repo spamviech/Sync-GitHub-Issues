@@ -11,6 +11,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Void (Void)
+import ExitCodes (parseError)
 import qualified GitHub
 import qualified GitHub.Data.Name as GitHub
 import qualified Options.Applicative as Options
@@ -105,6 +106,7 @@ parseRepositoryInformation = do
     Options.execParser
         $ Options.info (Options.helper <*> repositoryOption maybeOwnerRepository)
         $ progDesc "Sync issues of the specified github.com repository with a local copy."
+        <> Options.failureCode parseError
     where
         gitConfigs :: [FilePath]
         gitConfigs = [".git/config", "../.git/config"]
