@@ -22,6 +22,7 @@ Format:
 - Issue-Format:
     #Issue: <Issue-Number>
     <Titel>
+    <Leerzeile>
     <Body>
     ~~~~~~~~~~~
     #Comment: <Comment-Number>

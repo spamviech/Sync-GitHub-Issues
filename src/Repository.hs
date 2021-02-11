@@ -6,11 +6,9 @@ module Repository (Repository(..), parseRepositoryInformation) where
 
 import Control.Applicative (Alternative((<|>)))
 import Control.Monad (foldM)
+import qualified Data.Attoparsec.Text as Attoparsec
 import qualified Data.HashMap.Strict as HashMap
-import Data.Text (Text)
-import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
-import Data.Void (Void)
 import ExitCodes (parseError)
 import qualified GitHub
 import qualified GitHub.Data.Name as GitHub
@@ -18,8 +16,6 @@ import qualified Options.Applicative as Options
 import Options.Applicative (help, long, metavar, progDesc, short, showDefault, strOption, value)
 import System.Directory (doesFileExist)
 import Text.GitConfig.Parser (parseConfig, Section(..), GitConfig)
-import qualified Text.Megaparsec as Megaparsec
-import qualified Text.Megaparsec.Char as Megaparsec
 
 data Repository =
     Repository
@@ -64,20 +60,16 @@ directoryOption =
     <> value "Issues"
     <> showDefault
 
-parseUrl :: Megaparsec.Parsec Void Text (GitHub.Name GitHub.Owner, GitHub.Name GitHub.Repo)
+parseUrl :: Attoparsec.Parser (GitHub.Name GitHub.Owner, GitHub.Name GitHub.Repo)
 parseUrl = do
     -- Section ["remote","origin"] (fromList [("fetch","+refs/heads/*:refs/remotes/origin/*"),("url","git@github.com:spamviech/Zugkontrolle.git")])
     -- url = https://github.com/spamviech/Sync-GitHub-Issues.git
-    _prefix <- Megaparsec.string "git@github.com:" <|> Megaparsec.string "https://github.com/"
-    owner <- fmap (GitHub.N . Text.pack)
-        $ Megaparsec.many
-        $ Megaparsec.alphaNumChar <|> Megaparsec.char '-' <|> Megaparsec.char '_'
-    _slash <- Megaparsec.char '/'
-    repo <- fmap (GitHub.N . Text.pack)
-        $ Megaparsec.many
-        $ Megaparsec.alphaNumChar <|> Megaparsec.char '-' <|> Megaparsec.char '_'
-    _git <- Megaparsec.string ".git"
-    Megaparsec.eof
+    _prefix <- Attoparsec.string "git@github.com:" <|> Attoparsec.string "https://github.com/"
+    owner <- GitHub.N <$> Attoparsec.takeTill (== '/')
+    _slash <- Attoparsec.char '/'
+    repo <- GitHub.N <$> Attoparsec.takeTill (== '.')
+    _git <- Attoparsec.string ".git"
+    Attoparsec.endOfInput
     pure (owner, repo)
 
 extractFromConfig
@@ -88,7 +80,7 @@ extractFromConfig (Right config) = go config
         go :: GitConfig -> Maybe (GitHub.Name GitHub.Owner, GitHub.Name GitHub.Repo)
         go [] = Nothing
         go (Section ("remote":_remoteName) entries:t) = case HashMap.lookup "url" entries of
-            (Just url) -> Megaparsec.parseMaybe parseUrl url
+            (Just url) -> Attoparsec.maybeResult $ Attoparsec.parse parseUrl url
             Nothing -> go t
         go (_h:t) = go t
 
