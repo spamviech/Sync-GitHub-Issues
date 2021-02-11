@@ -1,9 +1,15 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main (main) where
 
+import qualified Control.Exception as Exception
+import qualified Control.Monad (foldM)
+import qualified Data.Attoparsec.Text as Attoparsec
 import Data.Either (fromRight)
+import qualified Data.Text as Text
+import qualified Data.Text.IO as Text
 import qualified Data.Vector as Vector
 import ExitCodes (connectionError)
 -- import qualified Data.ByteString as ByteString
@@ -12,7 +18,7 @@ import qualified GitHub
 import Repository (Repository(..), parseRepositoryInformation)
 import System.Directory
 import System.Exit (ExitCode(ExitFailure), exitWith, exitSuccess)
-import System.IO (stderr, hPrint)
+import System.IO
 import Token (token)
 
 {-
@@ -32,13 +38,16 @@ Format:
 -}
 main :: IO ()
 main = do
-    Repository {owner, repository, directory} <- parseRepositoryInformation
+    Repository {owner, repository, filePath} <- parseRepositoryInformation
     let aut = GitHub.OAuth token
     putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
-    let directoryNew = directory ++ "/new"
-    createDirectoryIfMissing True directoryNew
-    files <- listDirectory directoryNew
-    putStrLn $ "---------------\nfiles: " ++ show files
+    issueFileContents <- Exception.handle (\(_e :: Exception.IOException) -> pure Text.empty)
+        $ withFile filePath ReadMode
+        $ \handle -> do
+            hSetEncoding handle utf8
+            hSetNewlineMode handle noNewlineTranslation
+            Text.hGetContents handle
+    print issueFileContents
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     github aut (GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll) >>= \case
         Left err -> do

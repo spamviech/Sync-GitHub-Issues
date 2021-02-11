@@ -21,7 +21,7 @@ data Repository =
     Repository
     { owner :: GitHub.Name GitHub.Owner
     , repository :: GitHub.Name GitHub.Repo
-    , directory :: FilePath
+    , filePath :: FilePath
     }
     deriving (Show, Eq)
 
@@ -30,7 +30,7 @@ repositoryOption
 repositoryOption maybeOwnerRepository =
     Repository <$> ownerOption (fst <$> maybeOwnerRepository)
     <*> nameOption (snd <$> maybeOwnerRepository)
-    <*> directoryOption
+    <*> filePathOption
 
 ownerOption :: Maybe (GitHub.Name GitHub.Owner) -> Options.Parser (GitHub.Name GitHub.Owner)
 ownerOption remoteOwner =
@@ -50,14 +50,14 @@ nameOption remoteRepository =
     <> help "name of the repository"
     <> maybe mempty value remoteRepository
 
-directoryOption :: Options.Parser FilePath
-directoryOption =
+filePathOption :: Options.Parser FilePath
+filePathOption =
     strOption
-    $ long "directory"
-    <> short 'd'
-    <> metavar "DIRECTORY"
-    <> help "directory where to store the local copy"
-    <> value "Issues"
+    $ long "file"
+    <> short 'f'
+    <> metavar "PATH"
+    <> help "path of the file with the local copy"
+    <> value "Issues.txt"
     <> showDefault
 
 parseUrl :: Attoparsec.Parser (GitHub.Name GitHub.Owner, GitHub.Name GitHub.Repo)
@@ -69,7 +69,6 @@ parseUrl = do
     _slash <- Attoparsec.char '/'
     repo <- GitHub.N <$> Attoparsec.takeTill (== '.')
     _git <- Attoparsec.string ".git"
-    Attoparsec.endOfInput
     pure (owner, repo)
 
 extractFromConfig
