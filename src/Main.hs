@@ -15,6 +15,20 @@ import System.Exit (ExitCode(ExitFailure), exitWith, exitSuccess)
 import System.IO (stderr, hPrint)
 import Token (token)
 
+{-
+Format:
+- Eine Datei "Issues.txt" (macht nur Sinn bei überschaubarer Issue-Anzahl)
+- Erst offene Issues bis Trennzeile (_______________________________), danach geschlossene Issues
+- Issue-Format:
+    #Issue: <Issue-Number>
+    <Titel>
+    <Body>
+    ~~~~~~~~~~~
+    #Comment: <Comment-Number>
+    <Comment>
+    -------------------------
+    #Issue: <Issue-Number>
+-}
 main :: IO ()
 main = do
     Repository {owner, repository, directory} <- parseRepositoryInformation
@@ -52,6 +66,10 @@ main = do
     -- issue <- github aut $ GitHub.issueR owner repository $ IssueNumber 3
     -- print issue
     -- editIssueR :: Name Owner -> Name Repo -> IssueNumber -> EditIssue -> Request RW Issue
+    -- editOfIssue :: EditIssue
+    -- commentsR :: Name Owner -> Name Repo -> IssueNumber -> FetchCount -> Request k (Vector IssueComment) 
+    -- createCommentR :: Name Owner -> Name Repo -> IssueNumber -> Text -> Request RW Comment
+    -- editCommentR :: Name Owner -> Name Repo -> Id Comment -> Text -> Request RW Comment
     -- curl -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/spamviech/Zugkontrolle/issues
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
