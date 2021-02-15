@@ -4,9 +4,10 @@ import qualified System.Exit as Exit
 
 data ExitCode
     = Success
-    | ParseError
+    | ParseArgError
     | ConnectionError
     | NoTokenError
+    | ParseFileError
     deriving (Show, Eq, Enum)
 
 -- | 'System.Exit.exitWith', but with custom 'ExitCode'
