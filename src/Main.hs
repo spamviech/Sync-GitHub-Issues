@@ -7,19 +7,25 @@ module Main (main) where
 import qualified Control.Exception as Exception
 import qualified Control.Monad (foldM)
 import qualified Data.Attoparsec.Text as Attoparsec
+import qualified Data.ByteString as ByteString
 import Data.Either (fromRight)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import qualified Data.Vector as Vector
-import ExitCodes (connectionError)
+import ExitCodes (ExitCode(..), exitWith)
 -- import qualified Data.ByteString as ByteString
 import GitHub (github  {-Issue(..), NewIssue(..),, IssueNumber(..)-})
 import qualified GitHub
 import Repository (Repository(..), parseRepositoryInformation)
 import System.Directory
-import System.Exit (ExitCode(ExitFailure), exitWith, exitSuccess)
 import System.IO
-import Token (token)
+
+-- | Like 'withFile', but set encoding to 'utf8' with 'noNewlineTranslation'.
+withFileUtf8 :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
+withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
+    hSetEncoding handle utf8
+    hSetNewlineMode handle noNewlineTranslation
+    f handle
 
 {-
 Format:
@@ -38,21 +44,19 @@ Format:
 -}
 main :: IO ()
 main = do
+    let tokenPath = ".githubtoken"
+    aut <- Exception.handle (\(_e :: Exception.IOException) -> exitWith NoTokenError)
+        $ GitHub.OAuth <$> ByteString.readFile tokenPath
     Repository {owner, repository, filePath} <- parseRepositoryInformation
-    let aut = GitHub.OAuth token
     putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
     issueFileContents <- Exception.handle (\(_e :: Exception.IOException) -> pure Text.empty)
-        $ withFile filePath ReadMode
-        $ \handle -> do
-            hSetEncoding handle utf8
-            hSetNewlineMode handle noNewlineTranslation
-            Text.hGetContents handle
+        $ withFileUtf8 filePath ReadMode Text.hGetContents
     print issueFileContents
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     github aut (GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll) >>= \case
         Left err -> do
             hPrint stderr err
-            exitWith $ ExitFailure connectionError
+            exitWith ConnectionError
         Right issues -> do
             -- TODO
             -- clean up directory
@@ -84,4 +88,4 @@ main = do
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
     -- TODO clean up directoryNew
-    exitSuccess
+    exitWith Success

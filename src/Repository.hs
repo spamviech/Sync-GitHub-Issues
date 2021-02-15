@@ -9,7 +9,7 @@ import Control.Monad (foldM)
 import qualified Data.Attoparsec.Text as Attoparsec
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Text.IO as Text
-import ExitCodes (parseError)
+import ExitCodes (ExitCode(ParseError))
 import qualified GitHub
 import qualified GitHub.Data.Name as GitHub
 import qualified Options.Applicative as Options
@@ -97,7 +97,7 @@ parseRepositoryInformation = do
     Options.execParser
         $ Options.info (Options.helper <*> repositoryOption maybeOwnerRepository)
         $ progDesc "Sync issues of the specified github.com repository with a local copy."
-        <> Options.failureCode parseError
+        <> Options.failureCode (fromEnum ParseError)
     where
         gitConfigs :: [FilePath]
         gitConfigs = [".git/config", "../.git/config"]

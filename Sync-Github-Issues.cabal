@@ -22,8 +22,6 @@ executable Sync-Github-Issues
   other-modules:
       ExitCodes
       Repository
-      Token
-      Token.TH
       Paths_Sync_GitHub_Issues
   hs-source-dirs:
       src
