@@ -3,21 +3,23 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Main (main) where
 
-import Control.Applicative (Alternative((<|>)), optional)
+import Control.Applicative (Alternative((<|>)))
 import qualified Control.Exception as Exception
 import Control.Monad (forM)
 import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT)
+import qualified Data.Attoparsec.Combinator as Attoparsec
 import qualified Data.Attoparsec.Text as Attoparsec
+import Data.Bifunctor (Bifunctor(bimap, first))
 import qualified Data.ByteString as ByteString
-import Data.Either (fromRight)
-import Data.Functor (($>))
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable())
-import Data.List (foldl')
+import Data.List (partition)
+import Data.Maybe (isJust, fromJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
@@ -27,8 +29,8 @@ import ExitCodes (ExitCode(..), exitWith)
 import GitHub (github, Issue(..), IssueComment(..)  {-, NewIssue(..), IssueNumber(..)-})
 import qualified GitHub
 import Repository (Repository(..), parseRepositoryInformation)
-import System.Directory
-import System.IO
+import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, stderr, hPutStrLn
+                , noNewlineTranslation, hPrint, withFile, IOMode(ReadMode, WriteMode))
 
 -- | Like 'withFile', but set encoding to 'utf8' with 'noNewlineTranslation'.
 withFileUtf8 :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
@@ -38,7 +40,12 @@ withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
     f handle
 
 data LocalIssue =
-    LocalIssue { title :: Text, body :: Maybe Text, comments :: HashMap Int LocalComment }
+    LocalIssue
+    { title :: Text
+    , body :: Maybe Text
+    , comments :: HashMap Int LocalComment
+    , newComments :: [LocalComment]
+    }
     deriving (Show, Eq)
 
 newtype LocalComment = LocalComment { comment :: Text }
@@ -59,7 +66,10 @@ queryIssues aut owner repository = do
             comments <- fmap (HashMap.fromList . map idBodyTuple . Vector.toList)
                 $ ExceptT
                 $ github aut (GitHub.commentsR owner repository issueNumber GitHub.FetchAll)
-            pure (issueNumber, LocalIssue { title = issueTitle, body = issueBody, comments })
+            pure
+                ( issueNumber
+                , LocalIssue { title = issueTitle, body = issueBody, comments, newComments = [] }
+                )
 
 {-
 Format:
@@ -84,43 +94,99 @@ parseIssues filePath =
     $ Attoparsec.eitherResult . Attoparsec.parse parseContents
     <$> withFileUtf8 filePath ReadMode Text.hGetContents
     where
-        splitKnownNew
-            :: (Hashable k, Eq k) => (HashMap k v, [v]) -> (Maybe k, v) -> (HashMap k v, [v])
-        splitKnownNew (knownIssues, newIssues) (Nothing, newIssue) =
-            (knownIssues, newIssue : newIssues)
-        splitKnownNew (knownIssues, newIssues) (Just issueNumber, knownIssue) =
-            (HashMap.insert issueNumber knownIssue knownIssues, newIssues)
+        splitKnownNew :: (Hashable k, Eq k) => [(Maybe k, v)] -> (HashMap k v, [v])
+        splitKnownNew =
+            bimap (HashMap.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
 
         parseContents :: Attoparsec.Parser (HashMap GitHub.IssueNumber LocalIssue, [LocalIssue])
-        parseContents = fmap (foldl' splitKnownNew (HashMap.empty, [])) $ Attoparsec.many' $ do
-            {-
-            #Issue: (<Issue-Number>|new)
-            <Titel, einzeilig>
-            [<Leerzeile>
-            <Body, mehrzeilig>]
-            -}
-            issueNumber <- Attoparsec.string "#Issue: "
-                *> ((Just . GitHub.IssueNumber <$> Attoparsec.decimal)
-                    <|> (Attoparsec.string "new" $> Nothing))
-                <* Attoparsec.endOfLine
-            title <- Attoparsec.takeTill Attoparsec.isEndOfLine <* parseEndOfLineOrInput
-            body <- optional
-                $ Attoparsec.endOfLine *> Attoparsec.takeTill (== '~') <* parseEndOfLineOrInput
-            (comments, newComments)
-                <- fmap (foldl' splitKnownNew (HashMap.empty, [])) $ Attoparsec.many' $ do
-                    {-
-                    ~~~~~~~~~~~
-                    #Comment: (<Comment-Number>|new)
-                    <Comment, mehrzeilig>
-                    -}
-                    Attoparsec.takeWhile1 (== '~') *> Attoparsec.endOfLine
-                    commentNumber <- Attoparsec.string "#Comment: "
-                        *> ((Just <$> Attoparsec.decimal) <|> (Attoparsec.string "new" $> Nothing))
-                    (commentNumber, ) . LocalComment <$> Attoparsec.takeTill (== '-')
-            pure (issueNumber, LocalIssue { title, body, comments })
+        parseContents = fmap splitKnownNew $ Attoparsec.many' $ do
+            issueNumber <- Attoparsec.string issueHeader
+                *> (fmap GitHub.IssueNumber <$> parseIdOrNew)
+            Attoparsec.endOfLine
+            title <- Attoparsec.takeTill Attoparsec.isEndOfLine
+            Attoparsec.choice
+                [ ( issueNumber
+                  , LocalIssue
+                    { title, body = Nothing, comments = HashMap.empty, newComments = [] }
+                  )
+                  <$ parseEndOfIssue
+                , (issueNumber, )
+                  <$> (uncurry <$> (LocalIssue title . Just <$> parseBody) <*> parseComments)
+                , (issueNumber, ) . uncurry (LocalIssue title Nothing) <$> parseComments]
 
-parseEndOfLineOrInput :: Attoparsec.Parser ()
-parseEndOfLineOrInput = Attoparsec.endOfLine <|> Attoparsec.endOfInput
+        parseBody :: Attoparsec.Parser Text
+        parseBody = do
+            _newlines <- Attoparsec.count 2 Attoparsec.endOfLine
+            head
+                <$> Attoparsec.manyTill'
+                    (Attoparsec.takeWhile $ const True)
+                    (Attoparsec.lookAhead parseCommentSep <|> parseEndOfIssue)
+
+        parseComments :: Attoparsec.Parser (HashMap Int LocalComment, [LocalComment])
+        parseComments = do
+            fmap splitKnownNew $ Attoparsec.many' $ do
+                parseCommentSep
+                commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
+                (commentNumber, ) . LocalComment . head
+                    <$> Attoparsec.manyTill'
+                        (Attoparsec.takeWhile $ const True)
+                        (Attoparsec.lookAhead parseCommentSep <|> parseEndOfIssue)
+
+        parseIdOrNew :: Attoparsec.Parser (Maybe Int)
+        parseIdOrNew = (Just <$> Attoparsec.decimal) <|> (Nothing <$ Attoparsec.string "new")
+
+        parseSepLine :: Char -> Attoparsec.Parser ()
+        parseSepLine sepChar = do
+            Attoparsec.endOfLine
+            Attoparsec.skipMany1 $ Attoparsec.char sepChar
+            Attoparsec.endOfLine
+
+        commentSep :: Char
+        commentSep = '~'
+
+        parseCommentSep :: Attoparsec.Parser ()
+        parseCommentSep = parseSepLine commentSep
+
+        issueSep :: Char
+        issueSep = '-'
+
+        parseIssueSep :: Attoparsec.Parser ()
+        parseIssueSep = parseSepLine issueSep
+
+        parseEndOfIssue :: Attoparsec.Parser ()
+        parseEndOfIssue = parseIssueSep <|> Attoparsec.endOfInput
+
+issueHeader :: Text
+issueHeader = "#Issue: "
+
+commentHeader :: Text
+commentHeader = "#Comment: "
+
+showText :: (Show a) => a -> Text
+showText = Text.pack . show
+
+issuesToText :: HashMap GitHub.IssueNumber LocalIssue -> Text
+issuesToText = mconcat . map concatIssue . HashMap.toList
+    where
+        concatIssue :: (GitHub.IssueNumber, LocalIssue) -> Text
+        concatIssue (GitHub.IssueNumber n, LocalIssue {title, body, comments, newComments}) =
+            issueHeader
+            <> showText n
+            <> "\n"
+            <> title
+            <> "\n"
+            <> maybe Text.empty (("\n" <>) . (<> "\n")) body
+            <> mconcat (map knownCommentToText $ HashMap.toList comments)
+            <> mconcat (map newCommentToText newComments)
+            <> "-----------\n"
+
+        knownCommentToText :: (Int, LocalComment) -> Text
+        knownCommentToText (m, LocalComment {comment}) =
+            "~~~~~~~~~\n" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
+
+        newCommentToText :: LocalComment -> Text
+        newCommentToText
+            LocalComment {comment} = "-----------\n" <> commentHeader <> "new\n" <> comment <> "\n"
 
 main :: IO ()
 main = do
@@ -145,6 +211,7 @@ main = do
             hPutStrLn stderr err
             exitWith ConnectionError
         Right issues -> pure issues
+    print localIssues
     -- TODO create new issues
     -- createIssueR :: Name Owner -> Name Repo -> NewIssue -> Request RW Issue
     -- newIssue <- github aut
@@ -168,5 +235,9 @@ main = do
     -- curl -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/spamviech/Zugkontrolle/issues
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
-    -- TODO clean up directoryNew
+    -- TODO write file Issues.txt
+    Exception.handle (\(_e :: Exception.IOException) -> pure ())
+        $ withFileUtf8 filePath WriteMode
+        $ flip Text.hPutStr
+        $ issuesToText remoteIssues
     exitWith Success
