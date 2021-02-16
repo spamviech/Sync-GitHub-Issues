@@ -88,9 +88,13 @@ parseIssues
 parseIssues filePath =
     ExceptT
     $ Exception.handle (\(_e :: Exception.IOException) -> pure $ Right (HashMap.empty, []))
-    $ Attoparsec.eitherResult . Attoparsec.parse parseContents
+    $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseContents
     <$> withFileUtf8 filePath ReadMode Text.hGetContents
     where
+        signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
+        signalEndOfInput (Attoparsec.Partial f) = f Text.empty
+        signalEndOfInput fullResult = fullResult
+
         splitKnownNew :: (Hashable k, Eq k) => [(Maybe k, v)] -> (HashMap k v, [v])
         splitKnownNew =
             bimap (HashMap.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
@@ -111,28 +115,30 @@ parseIssues filePath =
                   <$ parseEndOfIssue
                 , (issueNumber, )
                   <$> (first <$> (LocalIssue title . Just <$> parseBody) <*> parseComments)
-                , (issueNumber, ) . first (LocalIssue title Nothing) <$> parseComments]
+                  <* parseEndOfIssue
+                , (issueNumber, ) . first (LocalIssue title Nothing) <$> parseComments
+                  <* parseEndOfIssue]
+
+        parseTillNextCommentOrIssue :: Attoparsec.Parser Text
+        parseTillNextCommentOrIssue =
+            Text.pack
+            <$> Attoparsec.manyTill'
+                Attoparsec.anyChar
+                (Attoparsec.lookAhead $ parseCommentSep <|> parseEndOfIssue)
 
         parseBody :: Attoparsec.Parser Text
         parseBody = do
             _newlines <- Attoparsec.count 2 Attoparsec.endOfLine
-            head
-                <$> Attoparsec.manyTill'
-                    (Attoparsec.takeWhile $ const True)
-                    (Attoparsec.lookAhead parseCommentSep <|> parseEndOfIssue)
+            parseTillNextCommentOrIssue
 
-        -- parse 0 or more Comments, terminated by parseEndOfIssue
         parseComments :: Attoparsec.Parser (HashMap Int LocalComment, [LocalComment])
-        parseComments = splitKnownNew <$> Attoparsec.many' parseComment <* parseEndOfIssue
+        parseComments = splitKnownNew <$> Attoparsec.many' parseComment
             where
                 parseComment :: Attoparsec.Parser (Maybe Int, LocalComment)
                 parseComment = do
                     parseCommentSep
                     commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
-                    (commentNumber, ) . LocalComment . head
-                        <$> Attoparsec.manyTill'
-                            (Attoparsec.takeWhile $ const True)
-                            (Attoparsec.lookAhead $ parseCommentSep <|> parseEndOfIssue)
+                    (commentNumber, ) . LocalComment <$> parseTillNextCommentOrIssue
 
         parseIdOrNew :: Attoparsec.Parser (Maybe Int)
         parseIdOrNew = (Just <$> Attoparsec.decimal) <|> (Nothing <$ Attoparsec.string "new")
@@ -230,10 +236,11 @@ main = do
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
     -- TODO write file Issues.txt
+    let syncedIssues = remoteIssues
     let writeFailure = "Failed to write to \"" ++ filePath ++ "\""
     Exception.handle
         (\(_e :: Exception.IOException) -> hPutStrLn stderr writeFailure >> exitWith WriteException)
         $ withFileUtf8 filePath WriteMode
         $ flip Text.hPutStr
-        $ issuesToText remoteIssues
+        $ issuesToText syncedIssues
     exitWith Success
