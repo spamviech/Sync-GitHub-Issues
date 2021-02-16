@@ -40,12 +40,7 @@ withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
     f handle
 
 data LocalIssue =
-    LocalIssue
-    { title :: Text
-    , body :: Maybe Text
-    , comments :: HashMap Int LocalComment
-    , newComments :: [LocalComment]
-    }
+    LocalIssue { title :: Text, body :: Maybe Text, comments :: HashMap Int LocalComment }
     deriving (Show, Eq)
 
 newtype LocalComment = LocalComment { comment :: Text }
@@ -66,10 +61,7 @@ queryIssues aut owner repository = do
             comments <- fmap (HashMap.fromList . map idBodyTuple . Vector.toList)
                 $ ExceptT
                 $ github aut (GitHub.commentsR owner repository issueNumber GitHub.FetchAll)
-            pure
-                ( issueNumber
-                , LocalIssue { title = issueTitle, body = issueBody, comments, newComments = [] }
-                )
+            pure (issueNumber, LocalIssue { title = issueTitle, body = issueBody, comments })
 
 {-
 Format:
@@ -87,7 +79,12 @@ Format:
     #Issue: (<Issue-Number>|new)
     ...
 -}
-parseIssues :: FilePath -> ExceptT String IO (HashMap GitHub.IssueNumber LocalIssue, [LocalIssue])
+parseIssues
+    :: FilePath
+    -> ExceptT
+        String
+        IO
+        (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
 parseIssues filePath =
     ExceptT
     $ Exception.handle (\(_e :: Exception.IOException) -> pure $ Right (HashMap.empty, []))
@@ -98,7 +95,10 @@ parseIssues filePath =
         splitKnownNew =
             bimap (HashMap.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
 
-        parseContents :: Attoparsec.Parser (HashMap GitHub.IssueNumber LocalIssue, [LocalIssue])
+        parseContents :: Attoparsec.Parser
+                          ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                          , [(LocalIssue, [LocalComment])]
+                          )
         parseContents = fmap splitKnownNew $ Attoparsec.many' $ do
             issueNumber <- Attoparsec.string issueHeader
                 *> (fmap GitHub.IssueNumber <$> parseIdOrNew)
@@ -106,13 +106,12 @@ parseIssues filePath =
             title <- Attoparsec.takeTill Attoparsec.isEndOfLine
             Attoparsec.choice
                 [ ( issueNumber
-                  , LocalIssue
-                    { title, body = Nothing, comments = HashMap.empty, newComments = [] }
+                  , (LocalIssue { title, body = Nothing, comments = HashMap.empty }, [])
                   )
                   <$ parseEndOfIssue
                 , (issueNumber, )
-                  <$> (uncurry <$> (LocalIssue title . Just <$> parseBody) <*> parseComments)
-                , (issueNumber, ) . uncurry (LocalIssue title Nothing) <$> parseComments]
+                  <$> (first <$> (LocalIssue title . Just <$> parseBody) <*> parseComments)
+                , (issueNumber, ) . first (LocalIssue title Nothing) <$> parseComments]
 
         parseBody :: Attoparsec.Parser Text
         parseBody = do
@@ -122,15 +121,18 @@ parseIssues filePath =
                     (Attoparsec.takeWhile $ const True)
                     (Attoparsec.lookAhead parseCommentSep <|> parseEndOfIssue)
 
+        -- parse 0 or more Comments, terminated by parseEndOfIssue
         parseComments :: Attoparsec.Parser (HashMap Int LocalComment, [LocalComment])
-        parseComments = do
-            fmap splitKnownNew $ Attoparsec.many' $ do
-                parseCommentSep
-                commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
-                (commentNumber, ) . LocalComment . head
-                    <$> Attoparsec.manyTill'
-                        (Attoparsec.takeWhile $ const True)
-                        (Attoparsec.lookAhead parseCommentSep <|> parseEndOfIssue)
+        parseComments = splitKnownNew <$> Attoparsec.many' parseComment <* parseEndOfIssue
+            where
+                parseComment :: Attoparsec.Parser (Maybe Int, LocalComment)
+                parseComment = do
+                    parseCommentSep
+                    commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
+                    (commentNumber, ) . LocalComment . head
+                        <$> Attoparsec.manyTill'
+                            (Attoparsec.takeWhile $ const True)
+                            (Attoparsec.lookAhead $ parseCommentSep <|> parseEndOfIssue)
 
         parseIdOrNew :: Attoparsec.Parser (Maybe Int)
         parseIdOrNew = (Just <$> Attoparsec.decimal) <|> (Nothing <$ Attoparsec.string "new")
@@ -169,24 +171,19 @@ issuesToText :: HashMap GitHub.IssueNumber LocalIssue -> Text
 issuesToText = mconcat . map concatIssue . HashMap.toList
     where
         concatIssue :: (GitHub.IssueNumber, LocalIssue) -> Text
-        concatIssue (GitHub.IssueNumber n, LocalIssue {title, body, comments, newComments}) =
+        concatIssue (GitHub.IssueNumber n, LocalIssue {title, body, comments}) =
             issueHeader
             <> showText n
             <> "\n"
             <> title
             <> "\n"
             <> maybe Text.empty (("\n" <>) . (<> "\n")) body
-            <> mconcat (map knownCommentToText $ HashMap.toList comments)
-            <> mconcat (map newCommentToText newComments)
+            <> mconcat (map commentToText $ HashMap.toList comments)
             <> "-----------\n"
 
-        knownCommentToText :: (Int, LocalComment) -> Text
-        knownCommentToText (m, LocalComment {comment}) =
+        commentToText :: (Int, LocalComment) -> Text
+        commentToText (m, LocalComment {comment}) =
             "~~~~~~~~~\n" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
-
-        newCommentToText :: LocalComment -> Text
-        newCommentToText
-            LocalComment {comment} = "-----------\n" <> commentHeader <> "new\n" <> comment <> "\n"
 
 main :: IO ()
 main = do
