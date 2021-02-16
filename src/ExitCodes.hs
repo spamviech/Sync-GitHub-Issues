@@ -8,6 +8,7 @@ data ExitCode
     | ConnectionError
     | NoTokenError
     | ParseFileError
+    | WriteException
     deriving (Show, Eq, Enum)
 
 -- | 'System.Exit.exitWith', but with custom 'ExitCode'

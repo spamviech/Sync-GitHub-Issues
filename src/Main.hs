@@ -194,9 +194,6 @@ main = do
         $ GitHub.OAuth <$> ByteString.readFile tokenPath
     Repository {owner, repository, filePath} <- parseRepositoryInformation
     putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
-    issueFileContents <- Exception.handle (\(_e :: Exception.IOException) -> pure Text.empty)
-        $ withFileUtf8 filePath ReadMode Text.hGetContents
-    print issueFileContents
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     remoteIssues <- runExceptT (queryIssues aut owner repository) >>= \case
         Left err -> do
@@ -206,7 +203,7 @@ main = do
     localIssues <- runExceptT (parseIssues filePath) >>= \case
         Left err -> do
             hPutStrLn stderr err
-            exitWith ConnectionError
+            exitWith ParseFileError
         Right issues -> pure issues
     print localIssues
     -- TODO create new issues
@@ -233,7 +230,9 @@ main = do
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
     -- TODO write file Issues.txt
-    Exception.handle (\(_e :: Exception.IOException) -> pure ())
+    let writeFailure = "Failed to write to \"" ++ filePath ++ "\""
+    Exception.handle
+        (\(_e :: Exception.IOException) -> hPutStrLn stderr writeFailure >> exitWith WriteException)
         $ withFileUtf8 filePath WriteMode
         $ flip Text.hPutStr
         $ issuesToText remoteIssues
