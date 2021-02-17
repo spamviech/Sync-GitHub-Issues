@@ -102,9 +102,7 @@ parseIssues filePath =
     $ Exception.handle (\(_e :: Exception.IOException) -> pure $ Right (HashMap.empty, []))
     $ Attoparsec.eitherResult
     . signalEndOfInput
-    . Attoparsec.parse
-        (parseContents <* (traceShowId <$> Attoparsec.takeText) <* Attoparsec.endOfInput)
-    . traceShowId
+    . Attoparsec.parse (parseContents <* Attoparsec.endOfInput)
     <$> withFileUtf8 filePath ReadMode Text.hGetContents
     where
         signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
@@ -120,7 +118,18 @@ parseIssues filePath =
                           ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
                           , [(LocalIssue, [LocalComment])]
                           )
-        parseContents = fmap splitKnownNew $ Attoparsec.many' $ do
+        parseContents = splitKnownNew <$> parseManyIssues []
+
+        parseManyIssues
+            :: [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
+            -> Attoparsec.Parser [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
+        parseManyIssues acc =
+            (parseManyIssues . (: acc) =<< parseIssue parseIssueSep)
+            <|> fmap (: acc) (parseIssue $ parseOpenClosedSep <|> Attoparsec.endOfInput)
+
+        parseIssue :: Attoparsec.Parser ()
+                   -> Attoparsec.Parser (Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))
+        parseIssue parseEndOfIssue = do
             issueNumber <- Attoparsec.string issueHeader
                 *> (fmap GitHub.IssueNumber <$> parseIdOrNew)
             Attoparsec.endOfLine
@@ -131,31 +140,35 @@ parseIssues filePath =
                   )
                   <$ parseEndOfIssue
                 , (issueNumber, )
-                  <$> (first <$> (LocalIssue title . Just <$> parseBody) <*> parseComments)
+                  <$> (first <$> (LocalIssue title . Just <$> parseBody parseEndOfIssue)
+                       <*> parseComments parseEndOfIssue)
                   <* parseEndOfIssue
-                , (issueNumber, ) . first (LocalIssue title Nothing) <$> parseComments
+                , (issueNumber, ) . first (LocalIssue title Nothing)
+                  <$> parseComments parseEndOfIssue
                   <* parseEndOfIssue]
 
-        parseTillNextCommentOrIssue :: Attoparsec.Parser Text
-        parseTillNextCommentOrIssue =
+        parseTillNextCommentOrIssue :: Attoparsec.Parser () -> Attoparsec.Parser Text
+        parseTillNextCommentOrIssue parseEndOfIssue =
             Text.pack
             <$> Attoparsec.manyTill'
                 Attoparsec.anyChar
                 (Attoparsec.lookAhead $ parseCommentSep <|> parseEndOfIssue)
 
-        parseBody :: Attoparsec.Parser Text
-        parseBody = do
+        parseBody :: Attoparsec.Parser () -> Attoparsec.Parser Text
+        parseBody parseEndOfIssue = do
             _newlines <- Attoparsec.count 2 Attoparsec.endOfLine
-            parseTillNextCommentOrIssue
+            parseTillNextCommentOrIssue parseEndOfIssue
 
-        parseComments :: Attoparsec.Parser (HashMap Int LocalComment, [LocalComment])
-        parseComments = splitKnownNew <$> Attoparsec.many' parseComment
+        parseComments
+            :: Attoparsec.Parser () -> Attoparsec.Parser (HashMap Int LocalComment, [LocalComment])
+        parseComments parseEndOfIssue = splitKnownNew <$> Attoparsec.many' parseComment
             where
                 parseComment :: Attoparsec.Parser (Maybe Int, LocalComment)
                 parseComment = do
                     parseCommentSep
                     commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
-                    (commentNumber, ) . LocalComment <$> parseTillNextCommentOrIssue
+                    (commentNumber, ) . LocalComment
+                        <$> parseTillNextCommentOrIssue parseEndOfIssue
 
         parseIdOrNew :: Attoparsec.Parser (Maybe Int)
         parseIdOrNew = (Just <$> Attoparsec.decimal) <|> (Nothing <$ Attoparsec.string "new")
@@ -178,8 +191,11 @@ parseIssues filePath =
         parseIssueSep :: Attoparsec.Parser ()
         parseIssueSep = parseSepLine issueSep
 
-        parseEndOfIssue :: Attoparsec.Parser ()
-        parseEndOfIssue = parseIssueSep <|> Attoparsec.endOfInput
+        openClosedSep :: Char
+        openClosedSep = '_'
+
+        parseOpenClosedSep :: Attoparsec.Parser ()
+        parseOpenClosedSep = parseSepLine openClosedSep
 
 issueHeader :: Text
 issueHeader = "#Issue: "
