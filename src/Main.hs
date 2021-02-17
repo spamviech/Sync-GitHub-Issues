@@ -29,16 +29,17 @@ import ExitCodes (ExitCode(..), exitWith)
 import GitHub (github, Issue(..), IssueComment(..)  {-, NewIssue(..), IssueNumber(..)-})
 import qualified GitHub
 import Repository (Repository(..), parseRepositoryInformation)
-import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, stderr, hPutStrLn
-                , noNewlineTranslation, hPrint, withFile, IOMode(ReadMode, WriteMode))
+import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, stderr, hPutStrLn, NewlineMode(..)
+                , Newline(..), hPrint, withFile, IOMode(ReadMode, WriteMode))
 
 import Debug.Trace
 
--- | Like 'withFile', but set encoding to 'utf8' with 'noNewlineTranslation'.
+-- | Like 'withFile', but set encoding to 'utf8'.
+-- Newlines are converted to unix-style on input, unchanged (i.e. unix-style) on output.
 withFileUtf8 :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
 withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
     hSetEncoding handle utf8
-    hSetNewlineMode handle noNewlineTranslation
+    hSetNewlineMode handle NewlineMode { inputNL = CRLF, outputNL = LF }
     f handle
 
 data LocalIssue =
