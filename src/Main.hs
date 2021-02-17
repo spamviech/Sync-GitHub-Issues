@@ -18,7 +18,7 @@ import qualified Data.ByteString as ByteString
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable())
-import Data.List (partition)
+import Data.List (foldl', partition)
 import Data.Maybe (isJust, fromJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -99,6 +99,7 @@ parseIssues filePath =
         splitKnownNew =
             bimap (HashMap.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
 
+        -- TODO parse closed issues
         parseContents :: Attoparsec.Parser
                           ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
                           , [(LocalIssue, [LocalComment])]
@@ -118,6 +119,7 @@ parseIssues filePath =
                   <* parseEndOfIssue
                 , (issueNumber, ) . first (LocalIssue title Nothing) <$> parseComments
                   <* parseEndOfIssue]
+                <* Attoparsec.endOfInput
 
         parseTillNextCommentOrIssue :: Attoparsec.Parser Text
         parseTillNextCommentOrIssue =
@@ -173,11 +175,24 @@ commentHeader = "#Comment: "
 showText :: (Show a) => a -> Text
 showText = Text.pack . show
 
-issuesToText :: HashMap GitHub.IssueNumber LocalIssue -> Text
-issuesToText = mconcat . map concatIssue . HashMap.toList
+issuesToText
+    :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -> Text
+issuesToText (openIssues, closedIssues) =
+    hashmapToText openIssues <> sepLine "__" <> hashmapToText closedIssues
     where
-        concatIssue :: (GitHub.IssueNumber, LocalIssue) -> Text
-        concatIssue (GitHub.IssueNumber n, LocalIssue {title, body, comments}) =
+        sepLine :: Text -> Text
+        sepLine c = Text.replicate 5 c <> "\n"
+
+        hashmapToText :: HashMap GitHub.IssueNumber LocalIssue -> Text
+        hashmapToText = foldl' prependIssue Text.empty . HashMap.toList
+
+        prependIssue :: Text -> (GitHub.IssueNumber, LocalIssue) -> Text
+        prependIssue acc issue
+            | Text.null acc = issueToText issue     -- last issue doesn't get a separator
+            | otherwise = issueToText issue <> sepLine "-" <> acc
+
+        issueToText :: (GitHub.IssueNumber, LocalIssue) -> Text
+        issueToText (GitHub.IssueNumber n, LocalIssue {title, body, comments}) =
             issueHeader
             <> showText n
             <> "\n"
@@ -185,11 +200,10 @@ issuesToText = mconcat . map concatIssue . HashMap.toList
             <> "\n"
             <> maybe Text.empty (("\n" <>) . (<> "\n")) body
             <> mconcat (map commentToText $ HashMap.toList comments)
-            <> "-----------\n"
 
         commentToText :: (Int, LocalComment) -> Text
         commentToText (m, LocalComment {comment}) =
-            "~~~~~~~~~\n" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
+            sepLine "~" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
 
 main :: IO ()
 main = do
@@ -201,17 +215,16 @@ main = do
     Repository {owner, repository, filePath} <- parseRepositoryInformation
     putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
-    remoteIssues <- runExceptT (queryIssues aut owner repository) >>= \case
-        Left err -> do
-            hPrint stderr err
-            exitWith ConnectionError
-        Right issues -> pure issues
+    -- remoteIssues <- runExceptT (queryIssues aut owner repository) >>= \case
+    --     Left err -> do
+    --         hPrint stderr err
+    --         exitWith ConnectionError
+    --     Right issues -> pure issues
     localIssues <- runExceptT (parseIssues filePath) >>= \case
         Left err -> do
             hPutStrLn stderr err
             exitWith ParseFileError
         Right issues -> pure issues
-    print localIssues
     -- TODO create new issues
     -- createIssueR :: Name Owner -> Name Repo -> NewIssue -> Request RW Issue
     -- newIssue <- github aut
@@ -236,7 +249,7 @@ main = do
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
     -- TODO write file Issues.txt
-    let syncedIssues = remoteIssues
+    let syncedIssues = (HashMap.map fst $ fst localIssues, HashMap.empty)
     let writeFailure = "Failed to write to \"" ++ filePath ++ "\""
     Exception.handle
         (\(_e :: Exception.IOException) -> hPutStrLn stderr writeFailure >> exitWith WriteException)
