@@ -96,10 +96,13 @@ parseIssues
     -> ExceptT
         String
         IO
-        (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        )
 parseIssues filePath =
     ExceptT
-    $ Exception.handle (\(_e :: Exception.IOException) -> pure $ Right (HashMap.empty, []))
+    $ Exception.handle
+        (\(_e :: Exception.IOException) -> pure $ Right ((HashMap.empty, []), (HashMap.empty, [])))
     $ Attoparsec.eitherResult
     . signalEndOfInput
     . Attoparsec.parse (parseContents <* Attoparsec.endOfInput)
@@ -115,17 +118,26 @@ parseIssues filePath =
 
         -- TODO parse closed issues
         parseContents :: Attoparsec.Parser
-                          ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
-                          , [(LocalIssue, [LocalComment])]
+                          ( ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                            , [(LocalIssue, [LocalComment])]
+                            )
+                          , ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                            , [(LocalIssue, [LocalComment])]
+                            )
                           )
-        parseContents = splitKnownNew <$> parseManyIssues []
+        parseContents =
+            (,)
+            <$> (splitKnownNew
+                 <$> parseManyIssues (parseOpenClosedSep <|> Attoparsec.endOfInput) [])
+            <*> (splitKnownNew <$> parseManyIssues Attoparsec.endOfInput [])
 
         parseManyIssues
-            :: [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
+            :: Attoparsec.Parser ()
+            -> [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
             -> Attoparsec.Parser [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
-        parseManyIssues acc =
-            (parseManyIssues . (: acc) =<< parseIssue parseIssueSep)
-            <|> fmap (: acc) (parseIssue $ parseOpenClosedSep <|> Attoparsec.endOfInput)
+        parseManyIssues parseEndSep acc =
+            (parseManyIssues parseEndSep . (: acc) =<< parseIssue parseIssueSep)
+            <|> fmap (: acc) (parseIssue parseEndSep)
 
         parseIssue :: Attoparsec.Parser ()
                    -> Attoparsec.Parser (Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))
@@ -250,12 +262,13 @@ main = do
     --         hPrint stderr err
     --         exitWith ConnectionError
     --     Right issues -> pure issues
-    localIssues <- runExceptT (parseIssues filePath) >>= \case
+    (localOpenIssues, localClosedIssues) <- runExceptT (parseIssues filePath) >>= \case
         Left err -> do
-            hPutStrLn stderr err
+            hPutStrLn stderr $ "Parse Error: " ++ err
             exitWith ParseFileError
         Right issues -> pure issues
-    print localIssues
+    print localOpenIssues
+    print localClosedIssues
     -- TODO create new issues
     -- createIssueR :: Name Owner -> Name Repo -> NewIssue -> Request RW Issue
     -- newIssue <- github aut
@@ -281,7 +294,7 @@ main = do
     -- https://github.com/phadej/github/tree/master/samples/Issues
     -- TODO write file Issues.txt
     -- let syncedIssues = (remoteIssues, HashMap.empty)
-    -- let syncedIssues = (HashMap.map fst $ fst localIssues, HashMap.empty)
+    -- let syncedIssues = (HashMap.map fst $ fst localOpenIssues, HashMap.map fst $ fst localClosedIssues)
     -- let writeFailure = "Failed to write to \"" ++ filePath ++ "\""
     -- Exception.handle
     --     (\(_e :: Exception.IOException) -> hPutStrLn stderr writeFailure >> exitWith WriteException)
