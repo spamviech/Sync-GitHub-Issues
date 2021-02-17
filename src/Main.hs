@@ -32,6 +32,8 @@ import Repository (Repository(..), parseRepositoryInformation)
 import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, stderr, hPutStrLn
                 , noNewlineTranslation, hPrint, withFile, IOMode(ReadMode, WriteMode))
 
+import Debug.Trace
+
 -- | Like 'withFile', but set encoding to 'utf8' with 'noNewlineTranslation'.
 withFileUtf8 :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
 withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
@@ -52,16 +54,25 @@ queryIssues :: (GitHub.AuthMethod auth)
             -> GitHub.Name GitHub.Repo
             -> ExceptT GitHub.Error IO (HashMap GitHub.IssueNumber LocalIssue)
 queryIssues aut owner repository = do
+    -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     issues <- ExceptT $ github aut $ GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll
     fmap HashMap.fromList
         $ forM (Vector.toList issues)
         $ \Issue {issueNumber, issueTitle, issueBody} -> do
             -- commentsR :: Name Owner -> Name Repo -> IssueNumber -> FetchCount -> Request k (Vector IssueComment)
-            let idBodyTuple c = (issueCommentId c, LocalComment { comment = issueCommentBody c })
+            let idBodyTuple c =
+                    (issueCommentId c, LocalComment { comment = lfNewlines $ issueCommentBody c })
             comments <- fmap (HashMap.fromList . map idBodyTuple . Vector.toList)
                 $ ExceptT
                 $ github aut (GitHub.commentsR owner repository issueNumber GitHub.FetchAll)
-            pure (issueNumber, LocalIssue { title = issueTitle, body = issueBody, comments })
+            pure
+                ( issueNumber
+                , LocalIssue
+                  { title = lfNewlines issueTitle, body = lfNewlines <$> issueBody, comments }
+                )
+    where
+        lfNewlines :: Text -> Text
+        lfNewlines = Text.replace "\r\n" "\n"
 
 {-
 Format:
@@ -88,7 +99,11 @@ parseIssues
 parseIssues filePath =
     ExceptT
     $ Exception.handle (\(_e :: Exception.IOException) -> pure $ Right (HashMap.empty, []))
-    $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseContents
+    $ Attoparsec.eitherResult
+    . signalEndOfInput
+    . Attoparsec.parse
+        (parseContents <* (traceShowId <$> Attoparsec.takeText) <* Attoparsec.endOfInput)
+    . traceShowId
     <$> withFileUtf8 filePath ReadMode Text.hGetContents
     where
         signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
@@ -119,7 +134,6 @@ parseIssues filePath =
                   <* parseEndOfIssue
                 , (issueNumber, ) . first (LocalIssue title Nothing) <$> parseComments
                   <* parseEndOfIssue]
-                <* Attoparsec.endOfInput
 
         parseTillNextCommentOrIssue :: Attoparsec.Parser Text
         parseTillNextCommentOrIssue =
@@ -181,7 +195,7 @@ issuesToText (openIssues, closedIssues) =
     hashmapToText openIssues <> sepLine "__" <> hashmapToText closedIssues
     where
         sepLine :: Text -> Text
-        sepLine c = Text.replicate 5 c <> "\n"
+        sepLine c = Text.replicate 15 c <> "\n"
 
         hashmapToText :: HashMap GitHub.IssueNumber LocalIssue -> Text
         hashmapToText = foldl' prependIssue Text.empty . HashMap.toList
@@ -214,7 +228,6 @@ main = do
         $ GitHub.OAuth <$> ByteString.readFile tokenPath
     Repository {owner, repository, filePath} <- parseRepositoryInformation
     putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
-    -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     -- remoteIssues <- runExceptT (queryIssues aut owner repository) >>= \case
     --     Left err -> do
     --         hPrint stderr err
@@ -225,6 +238,7 @@ main = do
             hPutStrLn stderr err
             exitWith ParseFileError
         Right issues -> pure issues
+    print localIssues
     -- TODO create new issues
     -- createIssueR :: Name Owner -> Name Repo -> NewIssue -> Request RW Issue
     -- newIssue <- github aut
@@ -249,11 +263,12 @@ main = do
     -- https://docs.github.com/en/rest/reference/issues#list-repository-issues
     -- https://github.com/phadej/github/tree/master/samples/Issues
     -- TODO write file Issues.txt
-    let syncedIssues = (HashMap.map fst $ fst localIssues, HashMap.empty)
-    let writeFailure = "Failed to write to \"" ++ filePath ++ "\""
-    Exception.handle
-        (\(_e :: Exception.IOException) -> hPutStrLn stderr writeFailure >> exitWith WriteException)
-        $ withFileUtf8 filePath WriteMode
-        $ flip Text.hPutStr
-        $ issuesToText syncedIssues
+    -- let syncedIssues = (remoteIssues, HashMap.empty)
+    -- let syncedIssues = (HashMap.map fst $ fst localIssues, HashMap.empty)
+    -- let writeFailure = "Failed to write to \"" ++ filePath ++ "\""
+    -- Exception.handle
+    --     (\(_e :: Exception.IOException) -> hPutStrLn stderr writeFailure >> exitWith WriteException)
+    --     $ withFileUtf8 filePath WriteMode
+    --     $ flip Text.hPutStr
+    --     $ issuesToText syncedIssues
     exitWith Success
