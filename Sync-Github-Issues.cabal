@@ -21,6 +21,7 @@ executable Sync-Github-Issues
   main-is: Main.hs
   other-modules:
       ExitCodes
+      LocalCopy
       Repository
       Paths_Sync_GitHub_Issues
   hs-source-dirs:
