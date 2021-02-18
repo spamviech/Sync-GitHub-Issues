@@ -4,17 +4,23 @@
 {-# LANGUAGE TupleSections #-}
 
 module LocalCopy
-  ( LocalIssue(..)
+  ( -- * Data types
+    LocalIssue(..)
   , LocalComment(..)
+    -- * Functions
   , readIssues
   , parseIssues
   , issuesToText
   , writeIssues
+    -- ** Utility functions
+  , handleExceptT
+  , showText
   ) where
 
 import Control.Applicative (Alternative((<|>)))
 import qualified Control.Exception as Exception
-import Control.Monad.Trans.Except (ExceptT(ExceptT))
+import Control.Monad.Trans.Class (MonadTrans(lift))
+import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, withExceptT, throwE)
 import qualified Data.Attoparsec.Combinator as Attoparsec
 import qualified Data.Attoparsec.Text as Attoparsec
 import Data.Bifunctor (Bifunctor(bimap, first))
@@ -26,10 +32,12 @@ import Data.Maybe (isJust, fromJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
-import ExitCodes (ExitCode(..), exitWith)
+import Data.Time.Clock (UTCTime(), getCurrentTime)
+import ExitCodes (ExitCode(..))
 import qualified GitHub
-import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, stderr, hPutStrLn, NewlineMode(..)
-                , Newline(..), withFile, IOMode(ReadMode, WriteMode))
+import System.Directory (getModificationTime)
+import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, NewlineMode(..), Newline(..)
+                , withFile, IOMode(ReadMode, WriteMode))
 
 -- | Like 'withFile', but set encoding to 'utf8'.
 -- Newlines are converted to unix-style on input, unchanged (i.e. unix-style) on output.
@@ -46,20 +54,30 @@ data LocalIssue =
 newtype LocalComment = LocalComment { comment :: Text }
     deriving (Show, Eq)
 
+-- defined here for simplicity
+-- maybe move to its own module, reexporting ExceptT and MonadTrans?
+handleExceptT :: (Exception.IOException -> ExceptT e IO a) -> ExceptT e IO a -> ExceptT e IO a
+handleExceptT handleWith action =
+    ExceptT $ Exception.handle (runExceptT . handleWith) $ runExceptT action
+
 readIssues
     :: FilePath
     -> ExceptT
-        String
+        (ExitCode, Text)
         IO
-        ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        ( UTCTime
+        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         )
 readIssues filePath =
-    ExceptT
-    $ Exception.handle
-        (\(_e :: Exception.IOException) -> pure $ Right ((HashMap.empty, []), (HashMap.empty, [])))
-    $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseIssues
-    <$> withFileUtf8 filePath ReadMode Text.hGetContents
+    handleExceptT (\_e -> lift $ (, (HashMap.empty, []), (HashMap.empty, [])) <$> getCurrentTime)
+    $ do
+        modificationTime <- lift $ getModificationTime filePath
+        (openIssues, closedIssues) <- withExceptT ((ParseFileError, ) . Text.pack)
+            $ ExceptT
+            $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseIssues
+            <$> withFileUtf8 filePath ReadMode Text.hGetContents
+        pure (modificationTime, openIssues, closedIssues)
     where
         signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
         signalEndOfInput (Attoparsec.Partial f) = f Text.empty
@@ -226,17 +244,15 @@ issuesToText (openIssues, closedIssues) =
 
 writeIssues :: FilePath
             -> (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
-            -> IO ()
+            -> ExceptT (ExitCode, Text) IO ()
 writeIssues filePath syncedIssues =
-    Exception.handle
-        (\(_e :: Exception.IOException) -> showErrorMessage >> exitWith WriteException)
+    handleExceptT (\(_e :: Exception.IOException) -> throwE (WriteException, errorMessage))
+    $ lift
     $ withFileUtf8 filePath WriteMode
     $ flip Text.hPutStr fileContents
     where
         fileContents :: Text
         fileContents = issuesToText syncedIssues
 
-        showErrorMessage :: IO ()
-        showErrorMessage = do
-            hPutStrLn stderr $ "Failed to write to \"" ++ filePath ++ "\"!"
-            print fileContents
+        errorMessage :: Text
+        errorMessage = "Failed to write to \"" <> Text.pack filePath <> "\"!\n" <> fileContents
