@@ -6,7 +6,7 @@
 
 module Main (main) where
 
-import Control.Monad (forM)
+import Control.Monad (forM, foldM, (>=>))
 import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, withExceptT, throwE)
 import qualified Data.ByteString as ByteString
@@ -21,6 +21,8 @@ import ExitCodes (ExitCode(..), exitWith)
 -- import qualified Data.ByteString as ByteString
 import GitHub (github, Issue(..), IssueComment(..), NewIssue(..))
 import qualified GitHub
+import Lens.Micro ((^.), _1, _2, _3, _5)
+import Lens.Micro.Extras (view)
 import LocalCopy
        (LocalIssue(..), LocalComment(..), readIssues, writeIssues, handleExceptT, showText)
 import Repository (Repository(..), parseRepositoryInformation)
@@ -42,15 +44,17 @@ main = exitExceptT $ do
         $ GitHub.OAuth <$> ByteString.readFile tokenPath
     Repository {owner, repository, filePath} <- lift parseRepositoryInformation
     lift $ putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
-    remoteIssues <- if queryGitHub
-        then withExceptT ((ConnectionError, ) . showText) $ queryIssues aut owner repository
-        else pure HashMap.empty
     localIssues <- withExceptT ((ParseFileError, ) . Text.pack) $ readIssues filePath
+    remoteIssues <- if queryGitHub
+        then withExceptT ((ConnectionError, ) . showText)
+            $ queryIssues aut owner repository
+            $ HashMap.keys (localIssues ^. _2 . _1) ++ HashMap.keys (localIssues ^. _3 . _1)
+        else pure HashMap.empty
     syncedIssues <- if updateGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ applyRemoteChanges aut
             $ calculateChanges remoteIssues localIssues
-        else pure $ (\(_a, _b, _c_, _d, e) -> e) $ calculateChanges remoteIssues localIssues
+        else pure $ view _5 $ calculateChanges remoteIssues localIssues
     if writeToFile
         then withExceptT (ParseFileError, ) $ writeIssues filePath syncedIssues
         else lift $ print syncedIssues
@@ -67,13 +71,19 @@ queryIssues :: (GitHub.AuthMethod auth)
             => auth
             -> GitHub.Name GitHub.Owner
             -> GitHub.Name GitHub.Repo
+            -> [GitHub.IssueNumber]
             -> ExceptT GitHub.Error IO (HashMap GitHub.IssueNumber LocalIssue)
-queryIssues aut owner repository = do
+queryIssues aut owner repository knownIssueNumbers = do
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     issues <- ExceptT $ github aut $ GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll
-    fmap HashMap.fromList
-        $ forM (Vector.toList issues)
-        $ \Issue {issueNumber, issueTitle, issueBody} -> do
+    openIssues <- HashMap.fromList <$> forM (Vector.toList issues) localIssue
+    foldM lookupIssue openIssues knownIssueNumbers
+    where
+        lfNewlines :: Text -> Text
+        lfNewlines = Text.replace "\r\n" "\n"
+
+        localIssue :: GitHub.Issue -> ExceptT GitHub.Error IO (GitHub.IssueNumber, LocalIssue)
+        localIssue Issue {issueNumber, issueTitle, issueBody} = do
             -- commentsR :: Name Owner -> Name Repo -> IssueNumber -> FetchCount -> Request k (Vector IssueComment)
             let idBodyTuple c =
                     (issueCommentId c, LocalComment { comment = lfNewlines $ issueCommentBody c })
@@ -85,9 +95,24 @@ queryIssues aut owner repository = do
                 , LocalIssue
                   { title = lfNewlines issueTitle, body = lfNewlines <$> issueBody, comments }
                 )
-    where
-        lfNewlines :: Text -> Text
-        lfNewlines = Text.replace "\r\n" "\n"
+
+        lookupIssue :: HashMap GitHub.IssueNumber LocalIssue
+                    -> GitHub.IssueNumber
+                    -> ExceptT GitHub.Error IO (HashMap GitHub.IssueNumber LocalIssue)
+        lookupIssue acc issueNumber
+            | HashMap.member issueNumber acc = pure acc
+            | otherwise = do
+                -- issueR :: Name Owner -> Name Repo -> IssueNumber -> Request k Issue
+                issue <- ExceptT (github aut $ GitHub.issueR owner repository issueNumber)
+                flip (uncurry HashMap.insert) acc <$> localIssue issue
+
+type ChangeInformation =
+    ( [GitHub.EditIssue]                             -- editIssueR
+    , [(GitHub.NewIssue, [Text], GitHub.IssueState)] -- createIssueR, createCommentR, editIssueR
+    , [(GitHub.Id GitHub.Comment, Text)]             -- editCommentR
+    , [(GitHub.IssueNumber, Text)]                   -- createCommentR
+    , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
+    )
 
 -- | Calculate required changes to achieve a synced state.
 calculateChanges
@@ -96,12 +121,7 @@ calculateChanges
        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
        )
-    -> ( [GitHub.EditIssue]                             -- editIssueR
-       , [(GitHub.NewIssue, [Text], GitHub.IssueState)] -- createIssueR, createCommentR
-       , [(GitHub.Id GitHub.Comment, Text)]             -- editCommentR
-       , [(GitHub.IssueNumber, Text)]                   -- createCommentR
-       , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
-       )
+    -> ChangeInformation
 calculateChanges
     remoteOpenIssues
     ( modificationTime
@@ -159,12 +179,7 @@ calculateChanges
 applyRemoteChanges
     :: (GitHub.AuthMethod auth)
     => auth
-    -> ( [GitHub.EditIssue]                             -- editIssueR
-       , [(GitHub.NewIssue, [Text], GitHub.IssueState)] -- createIssueR, createCommentR
-       , [(GitHub.Id GitHub.Comment, Text)]             -- editCommentR
-       , [(GitHub.IssueNumber, Text)]                   -- createCommentR
-       , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
-       )
+    -> ChangeInformation
     -> ExceptT
         GitHub.Error
         IO
@@ -181,11 +196,8 @@ applyRemoteChanges aut changes = do
     --     , newIssueMilestone = Nothing
     --     , newIssueLabels = Nothing
     --     }
-    -- TODO edit changed issues
     -- print newIssue
-    -- issueR :: Name Owner -> Name Repo -> IssueNumber -> Request k Issue
-    -- issue <- github aut $ GitHub.issueR owner repository $ IssueNumber 3
-    -- print issue
+    -- TODO edit changed issues
     -- editIssueR :: Name Owner -> Name Repo -> IssueNumber -> EditIssue -> Request RW Issue
     -- editOfIssue :: EditIssue
     -- createCommentR :: Name Owner -> Name Repo -> IssueNumber -> Text -> Request RW Comment
