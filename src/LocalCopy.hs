@@ -3,7 +3,14 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module LocalCopy (LocalIssue(..), LocalComment(..), parseIssues, writeIssues) where
+module LocalCopy
+  ( LocalIssue(..)
+  , LocalComment(..)
+  , readIssues
+  , parseIssues
+  , issuesToText
+  , writeIssues
+  ) where
 
 import Control.Applicative (Alternative((<|>)))
 import qualified Control.Exception as Exception
@@ -39,6 +46,25 @@ data LocalIssue =
 newtype LocalComment = LocalComment { comment :: Text }
     deriving (Show, Eq)
 
+readIssues
+    :: FilePath
+    -> ExceptT
+        String
+        IO
+        ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        )
+readIssues filePath =
+    ExceptT
+    $ Exception.handle
+        (\(_e :: Exception.IOException) -> pure $ Right ((HashMap.empty, []), (HashMap.empty, [])))
+    $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseIssues
+    <$> withFileUtf8 filePath ReadMode Text.hGetContents
+    where
+        signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
+        signalEndOfInput (Attoparsec.Partial f) = f Text.empty
+        signalEndOfInput fullResult = fullResult
+
 {-
 Format:
 - Eine Datei "Issues.txt" (macht nur Sinn bei überschaubarer Issue-Anzahl)
@@ -56,44 +82,30 @@ Format:
     ...
 -}
 parseIssues
-    :: FilePath
-    -> ExceptT
-        String
-        IO
+    :: Attoparsec.Parser
         ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         )
-parseIssues filePath =
-    ExceptT
-    $ Exception.handle
-        (\(_e :: Exception.IOException) -> pure $ Right ((HashMap.empty, []), (HashMap.empty, [])))
-    $ Attoparsec.eitherResult
-    . signalEndOfInput
-    . Attoparsec.parse (parseContents <* Attoparsec.endOfInput)
-    <$> withFileUtf8 filePath ReadMode Text.hGetContents
+parseIssues = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfInput
     where
-        signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
-        signalEndOfInput (Attoparsec.Partial f) = f Text.empty
-        signalEndOfInput fullResult = fullResult
+        parseOpenIssues :: Attoparsec.Parser
+                            ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                            , [(LocalIssue, [LocalComment])]
+                            )
+        parseOpenIssues =
+            splitKnownNew <$> parseManyIssues (parseOpenClosedSep <|> Attoparsec.endOfInput) []
+
+        parseClosedIssues :: Attoparsec.Parser
+                              ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                              , [(LocalIssue, [LocalComment])]
+                              )
+        parseClosedIssues =
+            ((HashMap.empty, []) <$ Attoparsec.endOfInput)
+            <|> (parseOpenClosedSep *> (splitKnownNew <$> parseManyIssues Attoparsec.endOfInput []))
 
         splitKnownNew :: (Hashable k, Eq k) => [(Maybe k, v)] -> (HashMap k v, [v])
         splitKnownNew =
             bimap (HashMap.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
-
-        -- TODO parse closed issues
-        parseContents :: Attoparsec.Parser
-                          ( ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
-                            , [(LocalIssue, [LocalComment])]
-                            )
-                          , ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
-                            , [(LocalIssue, [LocalComment])]
-                            )
-                          )
-        parseContents =
-            (,)
-            <$> (splitKnownNew
-                 <$> parseManyIssues (parseOpenClosedSep <|> Attoparsec.endOfInput) [])
-            <*> (splitKnownNew <$> parseManyIssues Attoparsec.endOfInput [])
 
         parseManyIssues
             :: Attoparsec.Parser ()
@@ -101,7 +113,7 @@ parseIssues filePath =
             -> Attoparsec.Parser [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
         parseManyIssues parseEndSep acc =
             (parseManyIssues parseEndSep . (: acc) =<< parseIssue parseIssueSep)
-            <|> fmap (: acc) (parseIssue parseEndSep)
+            <|> fmap (: acc) (parseIssue $ Attoparsec.lookAhead parseEndSep)
 
         parseIssue :: Attoparsec.Parser ()
                    -> Attoparsec.Parser (Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))

@@ -18,7 +18,7 @@ import ExitCodes (ExitCode(..), exitWith)
 -- import qualified Data.ByteString as ByteString
 import GitHub (github, Issue(..), IssueComment(..)  {-, NewIssue(..), IssueNumber(..)-})
 import qualified GitHub
-import LocalCopy (LocalIssue(..), LocalComment(..), parseIssues, writeIssues)
+import LocalCopy (LocalIssue(..), LocalComment(..), readIssues, writeIssues)
 import Repository (Repository(..), parseRepositoryInformation)
 import System.IO (stderr, hPutStrLn, hPrint)
 
@@ -38,7 +38,7 @@ main = do
                 exitWith ConnectionError
             Right issues -> pure issues
         else pure HashMap.empty
-    (localOpenIssues, localClosedIssues) <- runExceptT (parseIssues filePath) >>= \case
+    (localOpenIssues, localClosedIssues) <- runExceptT (readIssues filePath) >>= \case
         Left err -> do
             hPutStrLn stderr $ "Parse Error: " ++ err
             exitWith ParseFileError
@@ -106,3 +106,13 @@ queryIssues aut owner repository = do
     where
         lfNewlines :: Text -> Text
         lfNewlines = Text.replace "\r\n" "\n"
+
+calculateChanges :: ( [GitHub.EditIssue]    -- editIssueR
+                    , [GitHub.NewIssue]     -- createIssueR
+                    , [(GitHub.Id GitHub.Comment, Text)]    -- editCommentR
+                    , [(GitHub.IssueNumber, Text)]          -- createCommentR
+                    , ( HashMap GitHub.IssueNumber LocalIssue
+                      , HashMap GitHub.IssueNumber LocalIssue
+                      ) -- syncedIssues
+                    )
+calculateChanges = undefined --TODO
