@@ -2,6 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Main (main) where
 
@@ -16,7 +17,7 @@ import qualified Data.Text as Text
 import qualified Data.Vector as Vector
 import ExitCodes (ExitCode(..), exitWith)
 -- import qualified Data.ByteString as ByteString
-import GitHub (github, Issue(..), IssueComment(..)  {-, NewIssue(..), IssueNumber(..)-})
+import GitHub (github, Issue(..), IssueComment(..), NewIssue(..))
 import qualified GitHub
 import LocalCopy (LocalIssue(..), LocalComment(..), readIssues, writeIssues)
 import Repository (Repository(..), parseRepositoryInformation)
@@ -63,6 +64,7 @@ main = do
 
         writeToFile = False
 
+-- | Ask /github.com/ for all currently open issues.
 queryIssues :: (GitHub.AuthMethod auth)
             => auth
             -> GitHub.Name GitHub.Owner
@@ -89,6 +91,7 @@ queryIssues aut owner repository = do
         lfNewlines :: Text -> Text
         lfNewlines = Text.replace "\r\n" "\n"
 
+-- | Calculate required changes to achieve a synced state.
 calculateChanges
     :: HashMap GitHub.IssueNumber LocalIssue
     -> ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
@@ -98,10 +101,60 @@ calculateChanges
        , [(GitHub.NewIssue, [Text], GitHub.IssueState)] -- createIssueR, createCommentR
        , [(GitHub.Id GitHub.Comment, Text)]             -- editCommentR
        , [(GitHub.IssueNumber, Text)]                   -- createCommentR
-       , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- unchangedIssues
+       , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
        )
-calculateChanges remoteOpenIssues (localOpenIssues, localClosedIssues) = undefined --TODO
+calculateChanges
+    remoteOpenIssues
+    ((knownLocalOpenIssues, newLocalOpenIssues), (knownLocalClosedIssues, newLocalClosedIssues)) =
+    (editIssues, newIssues, editComments, newComments, localUnchangedIssues) --TODO
+    where
+        editIssues :: [GitHub.EditIssue]
+        editIssues = undefined
 
+        newIssues :: [(GitHub.NewIssue, [Text], GitHub.IssueState)]
+        newIssues =
+            newIssuesWithState GitHub.StateOpen newLocalOpenIssues
+            ++ newIssuesWithState GitHub.StateClosed newLocalClosedIssues
+
+        -- new Issue can't have known comments
+        -- thus, they will be created as well, probably assigning a new ID in the process
+        newIssuesWithState :: GitHub.IssueState
+                           -> [(LocalIssue, [LocalComment])]
+                           -> [(GitHub.NewIssue, [Text], GitHub.IssueState)]
+        newIssuesWithState state newLocalIssues =
+            [( NewIssue
+               { newIssueTitle = title
+               , newIssueBody = body
+               , newIssueAssignees = Vector.empty
+               , newIssueMilestone = Nothing
+               , newIssueLabels = Nothing
+               }
+             , map comment $ HashMap.elems comments ++ newIssueComments
+             , state
+             ) | (LocalIssue {title, body, comments}, newIssueComments) <- newLocalIssues]
+
+        editComments :: [(GitHub.Id GitHub.Comment, Text)]
+        editComments = undefined
+
+        newComments :: [(GitHub.IssueNumber, Text)]
+        newComments = go knownLocalOpenIssues ++ go knownLocalClosedIssues
+            where
+                go :: HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                   -> [(GitHub.IssueNumber, Text)]
+                go knownLocalIssues =
+                    concat
+                    $ HashMap.elems
+                    $ HashMap.mapWithKey newCommentsWithIssueNumber knownLocalIssues
+
+                newCommentsWithIssueNumber
+                    :: GitHub.IssueNumber -> (a, [LocalComment]) -> [(GitHub.IssueNumber, Text)]
+                newCommentsWithIssueNumber issueNumber = map ((issueNumber, ) . comment) . snd
+
+        localUnchangedIssues
+            :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+        localUnchangedIssues = undefined
+
+-- | Apply changes from 'calculateChanges' to /github.com/ and return the updated 'LocalIssues's.
 applyRemoteChanges
     :: (GitHub.AuthMethod auth)
     => auth
@@ -109,7 +162,7 @@ applyRemoteChanges
        , [(GitHub.NewIssue, [Text], GitHub.IssueState)] -- createIssueR, createCommentR
        , [(GitHub.Id GitHub.Comment, Text)]             -- editCommentR
        , [(GitHub.IssueNumber, Text)]                   -- createCommentR
-       , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- unchangedIssues
+       , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
        )
     -> ExceptT
         GitHub.Error
