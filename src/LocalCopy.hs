@@ -2,6 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module LocalCopy
   ( -- * Data types
@@ -32,7 +33,7 @@ import Data.Maybe (isJust, fromJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
-import Data.Time.Clock (UTCTime(), getCurrentTime)
+import Data.Time.Clock (UTCTime())
 import qualified GitHub
 import System.Directory (getModificationTime)
 import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, NewlineMode(..), Newline(..)
@@ -47,10 +48,15 @@ withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
     f handle
 
 data LocalIssue =
-    LocalIssue { title :: Text, body :: Maybe Text, comments :: HashMap Int LocalComment }
+    LocalIssue
+    { title :: Text
+    , modificationTime :: UTCTime
+    , body :: Maybe Text
+    , comments :: HashMap Int LocalComment
+    }
     deriving (Show, Eq)
 
-newtype LocalComment = LocalComment { comment :: Text }
+data LocalComment = LocalComment { comment :: Text, modificationTime :: UTCTime }
     deriving (Show, Eq)
 
 -- defined here for simplicity
@@ -64,18 +70,16 @@ readIssues
     -> ExceptT
         String
         IO
-        ( UTCTime
-        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         )
-readIssues filePath =
-    handleExceptT (\_e -> lift $ (, (HashMap.empty, []), (HashMap.empty, [])) <$> getCurrentTime)
-    $ do
-        modificationTime <- lift $ getModificationTime filePath
-        (openIssues, closedIssues) <- ExceptT
-            $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseIssues
-            <$> withFileUtf8 filePath ReadMode Text.hGetContents
-        pure (modificationTime, openIssues, closedIssues)
+readIssues filePath = handleExceptT (\_e -> pure ((HashMap.empty, []), (HashMap.empty, []))) $ do
+    modificationTime <- lift $ getModificationTime filePath
+    ExceptT
+        $ Attoparsec.eitherResult
+        . signalEndOfInput
+        . Attoparsec.parse (parseIssues modificationTime)
+        <$> withFileUtf8 filePath ReadMode Text.hGetContents
     where
         signalEndOfInput :: Attoparsec.Result a -> Attoparsec.Result a
         signalEndOfInput (Attoparsec.Partial f) = f Text.empty
@@ -98,11 +102,13 @@ Format:
     ...
 -}
 parseIssues
-    :: Attoparsec.Parser
+    :: UTCTime
+    -> Attoparsec.Parser
         ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         )
-parseIssues = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfInput
+parseIssues
+    modificationTime = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfInput
     where
         parseOpenIssues :: Attoparsec.Parser
                             ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
@@ -140,14 +146,18 @@ parseIssues = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfI
             title <- Attoparsec.takeTill Attoparsec.isEndOfLine
             Attoparsec.choice
                 [ ( issueNumber
-                  , (LocalIssue { title, body = Nothing, comments = HashMap.empty }, [])
+                  , ( LocalIssue
+                      { title, modificationTime, body = Nothing, comments = HashMap.empty }
+                    , []
+                    )
                   )
                   <$ parseEndOfIssue
                 , (issueNumber, )
-                  <$> (first <$> (LocalIssue title . Just <$> parseBody parseEndOfIssue)
+                  <$> (first
+                       <$> (LocalIssue title modificationTime . Just <$> parseBody parseEndOfIssue)
                        <*> parseComments parseEndOfIssue)
                   <* parseEndOfIssue
-                , (issueNumber, ) . first (LocalIssue title Nothing)
+                , (issueNumber, ) . first (LocalIssue title modificationTime Nothing)
                   <$> parseComments parseEndOfIssue
                   <* parseEndOfIssue]
 
@@ -171,7 +181,7 @@ parseIssues = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfI
                 parseComment = do
                     parseCommentSep
                     commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
-                    (commentNumber, ) . LocalComment
+                    (commentNumber, ) . flip LocalComment modificationTime
                         <$> parseTillNextCommentOrIssue parseEndOfIssue
 
         parseIdOrNew :: Attoparsec.Parser (Maybe Int)

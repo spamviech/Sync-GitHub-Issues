@@ -3,10 +3,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module Main (main) where
 
-import Control.Monad (forM, foldM, (>=>))
+import Control.Monad (forM, foldM)
 import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, withExceptT, throwE)
 import qualified Data.ByteString as ByteString
@@ -15,13 +16,12 @@ import qualified Data.HashMap.Strict as HashMap
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
-import Data.Time.Clock (UTCTime())
 import qualified Data.Vector as Vector
 import ExitCodes (ExitCode(..), exitWith)
 -- import qualified Data.ByteString as ByteString
 import GitHub (github, Issue(..), IssueComment(..), NewIssue(..))
 import qualified GitHub
-import Lens.Micro ((^.), _1, _2, _3, _5)
+import Lens.Micro (_5)
 import Lens.Micro.Extras (view)
 import LocalCopy
        (LocalIssue(..), LocalComment(..), readIssues, writeIssues, handleExceptT, showText)
@@ -48,8 +48,8 @@ main = exitExceptT $ do
     remoteIssues <- if queryGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ queryIssues aut owner repository
-            $ HashMap.keys (localIssues ^. _2 . _1) ++ HashMap.keys (localIssues ^. _3 . _1)
-        else pure HashMap.empty
+            $ HashMap.keys (fst $ fst localIssues) ++ HashMap.keys (fst $ snd localIssues)
+        else pure (HashMap.empty, HashMap.empty)
     syncedIssues <- if updateGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ applyRemoteChanges aut
@@ -72,39 +72,55 @@ queryIssues :: (GitHub.AuthMethod auth)
             -> GitHub.Name GitHub.Owner
             -> GitHub.Name GitHub.Repo
             -> [GitHub.IssueNumber]
-            -> ExceptT GitHub.Error IO (HashMap GitHub.IssueNumber LocalIssue)
+            -> ExceptT
+                GitHub.Error
+                IO
+                (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
 queryIssues aut owner repository knownIssueNumbers = do
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     issues <- ExceptT $ github aut $ GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll
     openIssues <- HashMap.fromList <$> forM (Vector.toList issues) localIssue
-    foldM lookupIssue openIssues knownIssueNumbers
+    foldM lookupIssue (openIssues, HashMap.empty) knownIssueNumbers
     where
         lfNewlines :: Text -> Text
         lfNewlines = Text.replace "\r\n" "\n"
 
         localIssue :: GitHub.Issue -> ExceptT GitHub.Error IO (GitHub.IssueNumber, LocalIssue)
-        localIssue Issue {issueNumber, issueTitle, issueBody} = do
+        localIssue Issue {issueNumber, issueTitle, issueBody, issueUpdatedAt} = do
             -- commentsR :: Name Owner -> Name Repo -> IssueNumber -> FetchCount -> Request k (Vector IssueComment)
-            let idBodyTuple c =
-                    (issueCommentId c, LocalComment { comment = lfNewlines $ issueCommentBody c })
+            let idBodyTuple IssueComment {issueCommentId, issueCommentBody, issueCommentUpdatedAt} =
+                    ( issueCommentId
+                    , LocalComment
+                      { comment = lfNewlines issueCommentBody
+                      , modificationTime = issueCommentUpdatedAt
+                      }
+                    )
             comments <- fmap (HashMap.fromList . map idBodyTuple . Vector.toList)
                 $ ExceptT
                 $ github aut (GitHub.commentsR owner repository issueNumber GitHub.FetchAll)
             pure
                 ( issueNumber
                 , LocalIssue
-                  { title = lfNewlines issueTitle, body = lfNewlines <$> issueBody, comments }
+                  { title = lfNewlines issueTitle
+                  , modificationTime = issueUpdatedAt
+                  , body = lfNewlines <$> issueBody
+                  , comments
+                  }
                 )
 
-        lookupIssue :: HashMap GitHub.IssueNumber LocalIssue
-                    -> GitHub.IssueNumber
-                    -> ExceptT GitHub.Error IO (HashMap GitHub.IssueNumber LocalIssue)
-        lookupIssue acc issueNumber
-            | HashMap.member issueNumber acc = pure acc
+        lookupIssue
+            :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+            -> GitHub.IssueNumber
+            -> ExceptT
+                GitHub.Error
+                IO
+                (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+        lookupIssue acc@(openIssues, closedIssues) issueNumber
+            | HashMap.member issueNumber openIssues = pure acc
             | otherwise = do
                 -- issueR :: Name Owner -> Name Repo -> IssueNumber -> Request k Issue
                 issue <- ExceptT (github aut $ GitHub.issueR owner repository issueNumber)
-                flip (uncurry HashMap.insert) acc <$> localIssue issue
+                (openIssues, ) . flip (uncurry HashMap.insert) closedIssues <$> localIssue issue
 
 type ChangeInformation =
     ( [GitHub.EditIssue]                             -- editIssueR
@@ -116,18 +132,15 @@ type ChangeInformation =
 
 -- | Calculate required changes to achieve a synced state.
 calculateChanges
-    :: HashMap GitHub.IssueNumber LocalIssue
-    -> ( UTCTime
-       , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+    :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+    -> ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
        )
     -> ChangeInformation
 calculateChanges
-    remoteOpenIssues
-    ( modificationTime
-    , (knownLocalOpenIssues, newLocalOpenIssues)
-    , (knownLocalClosedIssues, newLocalClosedIssues)
-    ) = (editIssues, newIssues, editComments, newComments, localUnchangedIssues) --TODO
+    (remoteOpenIssues, remoteClosedIssues)
+    ((knownLocalOpenIssues, newLocalOpenIssues), (knownLocalClosedIssues, newLocalClosedIssues)) =
+    (editIssues, newIssues, editComments, newComments, localUnchangedIssues) --TODO
     where
         editIssues :: [GitHub.EditIssue]
         editIssues = undefined
