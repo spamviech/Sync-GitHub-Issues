@@ -20,7 +20,7 @@ module LocalCopy
 import Control.Applicative (Alternative((<|>)))
 import qualified Control.Exception as Exception
 import Control.Monad.Trans.Class (MonadTrans(lift))
-import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, withExceptT, throwE)
+import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, throwE)
 import qualified Data.Attoparsec.Combinator as Attoparsec
 import qualified Data.Attoparsec.Text as Attoparsec
 import Data.Bifunctor (Bifunctor(bimap, first))
@@ -33,7 +33,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Time.Clock (UTCTime(), getCurrentTime)
-import ExitCodes (ExitCode(..))
 import qualified GitHub
 import System.Directory (getModificationTime)
 import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, NewlineMode(..), Newline(..)
@@ -63,7 +62,7 @@ handleExceptT handleWith action =
 readIssues
     :: FilePath
     -> ExceptT
-        (ExitCode, Text)
+        String
         IO
         ( UTCTime
         , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
@@ -73,8 +72,7 @@ readIssues filePath =
     handleExceptT (\_e -> lift $ (, (HashMap.empty, []), (HashMap.empty, [])) <$> getCurrentTime)
     $ do
         modificationTime <- lift $ getModificationTime filePath
-        (openIssues, closedIssues) <- withExceptT ((ParseFileError, ) . Text.pack)
-            $ ExceptT
+        (openIssues, closedIssues) <- ExceptT
             $ Attoparsec.eitherResult . signalEndOfInput . Attoparsec.parse parseIssues
             <$> withFileUtf8 filePath ReadMode Text.hGetContents
         pure (modificationTime, openIssues, closedIssues)
@@ -244,9 +242,9 @@ issuesToText (openIssues, closedIssues) =
 
 writeIssues :: FilePath
             -> (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
-            -> ExceptT (ExitCode, Text) IO ()
+            -> ExceptT Text IO ()
 writeIssues filePath syncedIssues =
-    handleExceptT (\(_e :: Exception.IOException) -> throwE (WriteException, errorMessage))
+    handleExceptT (\(_e :: Exception.IOException) -> throwE errorMessage)
     $ lift
     $ withFileUtf8 filePath WriteMode
     $ flip Text.hPutStr fileContents

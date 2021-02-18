@@ -43,14 +43,16 @@ main = exitExceptT $ do
     Repository {owner, repository, filePath} <- lift parseRepositoryInformation
     lift $ putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
     remoteIssues <- if queryGitHub
-        then queryIssues aut owner repository
+        then withExceptT ((ConnectionError, ) . showText) $ queryIssues aut owner repository
         else pure HashMap.empty
-    localIssues <- readIssues filePath
+    localIssues <- withExceptT ((ParseFileError, ) . Text.pack) $ readIssues filePath
     syncedIssues <- if updateGitHub
-        then applyRemoteChanges aut $ calculateChanges remoteIssues localIssues
+        then withExceptT ((ConnectionError, ) . showText)
+            $ applyRemoteChanges aut
+            $ calculateChanges remoteIssues localIssues
         else pure $ (\(_a, _b, _c_, _d, e) -> e) $ calculateChanges remoteIssues localIssues
     if writeToFile
-        then writeIssues filePath syncedIssues
+        then withExceptT (ParseFileError, ) $ writeIssues filePath syncedIssues
         else lift $ print syncedIssues
     where
         -- TODO Dev-Flags so file-overwrites/api-access can be restricted
@@ -65,13 +67,10 @@ queryIssues :: (GitHub.AuthMethod auth)
             => auth
             -> GitHub.Name GitHub.Owner
             -> GitHub.Name GitHub.Repo
-            -> ExceptT (ExitCode, Text) IO (HashMap GitHub.IssueNumber LocalIssue)
+            -> ExceptT GitHub.Error IO (HashMap GitHub.IssueNumber LocalIssue)
 queryIssues aut owner repository = do
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
-    issues <- withExceptT ((ConnectionError, ) . showText)
-        $ ExceptT
-        $ github aut
-        $ GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll
+    issues <- ExceptT $ github aut $ GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll
     fmap HashMap.fromList
         $ forM (Vector.toList issues)
         $ \Issue {issueNumber, issueTitle, issueBody} -> do
@@ -79,7 +78,6 @@ queryIssues aut owner repository = do
             let idBodyTuple c =
                     (issueCommentId c, LocalComment { comment = lfNewlines $ issueCommentBody c })
             comments <- fmap (HashMap.fromList . map idBodyTuple . Vector.toList)
-                $ withExceptT ((ConnectionError, ) . showText)
                 $ ExceptT
                 $ github aut (GitHub.commentsR owner repository issueNumber GitHub.FetchAll)
             pure
@@ -168,7 +166,7 @@ applyRemoteChanges
        , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
        )
     -> ExceptT
-        (ExitCode, Text)
+        GitHub.Error
         IO
         (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
 applyRemoteChanges aut changes = do
