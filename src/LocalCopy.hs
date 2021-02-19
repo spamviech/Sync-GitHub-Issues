@@ -3,6 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module LocalCopy
   ( -- * Data types
@@ -56,8 +57,25 @@ data LocalIssue =
     }
     deriving (Show, Eq)
 
+instance Semigroup LocalIssue where
+    (<>) :: LocalIssue -> LocalIssue -> LocalIssue
+    (<>)
+        i0@LocalIssue {modificationTime = t0, comments = c0}
+        i1@LocalIssue {modificationTime = t1, comments = c1}
+        | t0 < t1 = i1 { comments }
+        | otherwise = i0 { comments }
+        where
+            comments :: HashMap Int LocalComment
+            comments = HashMap.unionWith (<>) c0 c1
+
 data LocalComment = LocalComment { comment :: Text, modificationTime :: UTCTime }
     deriving (Show, Eq)
+
+instance Semigroup LocalComment where
+    (<>) :: LocalComment -> LocalComment -> LocalComment
+    (<>) c0@LocalComment {modificationTime = t0} c1@LocalComment {modificationTime = t1}
+        | t0 < t1 = c1
+        | otherwise = c0
 
 -- defined here for simplicity
 -- maybe move to its own module, reexporting ExceptT and MonadTrans?

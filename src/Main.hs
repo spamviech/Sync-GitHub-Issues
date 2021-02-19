@@ -4,15 +4,19 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Main (main) where
 
 import Control.Monad (forM, foldM)
 import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, withExceptT, throwE)
+import Data.Bifunctor (Bifunctor(bimap))
 import qualified Data.ByteString as ByteString
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
+import Data.Hashable (Hashable())
+import Data.List (foldl', minimumBy)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
@@ -142,9 +146,6 @@ calculateChanges
     ((knownLocalOpenIssues, newLocalOpenIssues), (knownLocalClosedIssues, newLocalClosedIssues)) =
     (editIssues, newIssues, editComments, newComments, localUnchangedIssues) --TODO
     where
-        editIssues :: [GitHub.EditIssue]
-        editIssues = undefined
-
         newIssues :: [(GitHub.NewIssue, [Text], GitHub.IssueState)]
         newIssues =
             newIssuesWithState GitHub.StateOpen newLocalOpenIssues
@@ -167,9 +168,6 @@ calculateChanges
              , state
              ) | (LocalIssue {title, body, comments}, newIssueComments) <- newLocalIssues]
 
-        editComments :: [(GitHub.Id GitHub.Comment, Text)]
-        editComments = undefined
-
         newComments :: [(GitHub.IssueNumber, Text)]
         newComments = go knownLocalOpenIssues ++ go knownLocalClosedIssues
             where
@@ -184,9 +182,36 @@ calculateChanges
                     :: GitHub.IssueNumber -> (a, [LocalComment]) -> [(GitHub.IssueNumber, Text)]
                 newCommentsWithIssueNumber issueNumber = map ((issueNumber, ) . comment) . snd
 
+        editIssues :: [GitHub.EditIssue]
+        editComments :: [(GitHub.Id GitHub.Comment, Text)]
         localUnchangedIssues
             :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
-        localUnchangedIssues = undefined
+        (editIssues, editComments, bimap HashMap.fromList HashMap.fromList -> localUnchangedIssues) =
+            -- remoteOpenIssues, remoteClosedIssues
+            -- knownLocalOpenIssues, knownLocalClosedIssues
+            foldl' syncIssue ([], [], ([], []))
+            $ unionsWith
+                (<>)
+                [ HashMap.map ((, Nothing, Nothing, Nothing) . Just) remoteOpenIssues
+                , HashMap.map ((Nothing, , Nothing, Nothing) . Just) remoteClosedIssues
+                , HashMap.map ((Nothing, Nothing, , Nothing) . Just . fst) knownLocalOpenIssues
+                , HashMap.map ((Nothing, Nothing, Nothing, ) . Just . fst) knownLocalClosedIssues]
+
+        unionsWith :: (Eq k, Hashable k) => (v -> v -> v) -> [HashMap k v] -> HashMap k v
+        unionsWith f = foldl' (HashMap.unionWith f) HashMap.empty
+
+        syncIssue :: ( [GitHub.EditIssue]
+                     , [(GitHub.Id GitHub.Comment, Text)]
+                     , ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
+                     )
+                  -> (Maybe LocalIssue, Maybe LocalIssue, Maybe LocalIssue, Maybe LocalIssue)
+                  -> ( [GitHub.EditIssue]
+                     , [(GitHub.Id GitHub.Comment, Text)]
+                     , ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
+                     )
+        syncIssue
+            (editIssues', editComments', (unchangedOpenIssues, unchangedClosedIssues))
+            (remoteOpen, remoteClosed, localOpen, localClosed) = undefined -- TODO
 
 -- | Apply changes from 'calculateChanges' to /github.com/ and return the updated 'LocalIssues's.
 applyRemoteChanges
