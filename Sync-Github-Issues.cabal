@@ -23,6 +23,7 @@ executable Sync-Github-Issues
       ExitCodes
       LocalCopy
       Repository
+      SyncGitHub
       Paths_Sync_GitHub_Issues
   hs-source-dirs:
       src
