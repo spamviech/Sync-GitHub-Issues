@@ -4,6 +4,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module LocalCopy
   ( -- * Data types
@@ -50,15 +51,30 @@ withFileUtf8 filePath ioMode f = withFile filePath ioMode $ \handle -> do
 data LocalIssue =
     LocalIssue
     { title :: Text
+    , state :: GitHub.IssueState
     , modificationTime :: UTCTime
     , body :: Maybe Text
     , comments :: Map Int LocalComment
     }
     deriving (Show, Eq)
 
+-- | Take the newer Issue, merging comments using their Semigroup instance.
+-- At equal modification time, the left one wins.
+instance Semigroup LocalIssue where
+    (<>) :: LocalIssue -> LocalIssue -> LocalIssue
+    (<>)
+        i0@LocalIssue {modificationTime = t0, comments = c0, state = s0}
+        i1@LocalIssue {modificationTime = t1, comments = c1, state = s1}
+        | t0 < t1 = i1 { comments, state = s1 }
+        | otherwise = i0 { comments, state = s0 }
+        where
+            comments :: Map Int LocalComment
+            comments = Map.unionWith (<>) c0 c1
+
 data LocalComment = LocalComment { comment :: Text, modificationTime :: UTCTime }
     deriving (Show, Eq)
 
+-- | Take the newer Comment. At equal modification time, the left one wins.
 instance Semigroup LocalComment where
     (<>) :: LocalComment -> LocalComment -> LocalComment
     (<>) c0@LocalComment {modificationTime = t0} c1@LocalComment {modificationTime = t1}
@@ -76,10 +92,8 @@ readIssues
     -> ExceptT
         String
         IO
-        ( (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-        , (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-        )
-readIssues filePath = handleExceptT (\_e -> pure ((Map.empty, []), (Map.empty, []))) $ do
+        (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+readIssues filePath = handleExceptT (\_e -> pure (Map.empty, [])) $ do
     modificationTime <- lift $ getModificationTime filePath
     ExceptT
         $ Attoparsec.eitherResult
@@ -110,18 +124,15 @@ Format:
 parseIssues
     :: UTCTime
     -> Attoparsec.Parser
-        ( (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-        , (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-        )
+        (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
 parseIssues
-    modificationTime = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfInput
+    modificationTime = (<>) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfInput
     where
         parseOpenIssues :: Attoparsec.Parser
                             ( Map GitHub.IssueNumber (LocalIssue, [LocalComment])
                             , [(LocalIssue, [LocalComment])]
                             )
-        parseOpenIssues =
-            splitKnownNew <$> parseManyIssues (parseOpenClosedSep <|> Attoparsec.endOfInput) []
+        parseOpenIssues = splitKnownNew <$> parseManyIssues GitHub.StateOpen []
 
         parseClosedIssues :: Attoparsec.Parser
                               ( Map GitHub.IssueNumber (LocalIssue, [LocalComment])
@@ -129,40 +140,48 @@ parseIssues
                               )
         parseClosedIssues =
             ((Map.empty, []) <$ Attoparsec.endOfInput)
-            <|> (parseOpenClosedSep *> (splitKnownNew <$> parseManyIssues Attoparsec.endOfInput []))
+            <|> (parseOpenClosedSep *> (splitKnownNew <$> parseManyIssues GitHub.StateClosed []))
 
         splitKnownNew :: (Ord k, Eq k) => [(Maybe k, v)] -> (Map k v, [v])
         splitKnownNew =
             bimap (Map.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
 
         parseManyIssues
-            :: Attoparsec.Parser ()
+            :: GitHub.IssueState
             -> [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
             -> Attoparsec.Parser [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
-        parseManyIssues parseEndSep acc =
-            (parseManyIssues parseEndSep . (: acc) =<< parseIssue parseIssueSep)
-            <|> fmap (: acc) (parseIssue $ Attoparsec.lookAhead parseEndSep)
+        parseManyIssues state acc =
+            (parseIssue state parseIssueSep >>= parseManyIssues state . (: acc))
+            <|> fmap (: acc) (parseIssue state $ Attoparsec.lookAhead parseEndSep)
+            where
+                parseEndSep :: Attoparsec.Parser ()
+                parseEndSep = case state of
+                    GitHub.StateOpen -> parseOpenClosedSep <|> Attoparsec.endOfInput
+                    GitHub.StateClosed -> Attoparsec.endOfInput
 
-        parseIssue :: Attoparsec.Parser ()
+        parseIssue :: GitHub.IssueState
+                   -> Attoparsec.Parser ()
                    -> Attoparsec.Parser (Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))
-        parseIssue parseEndOfIssue = do
+        parseIssue state parseEndOfIssue = do
             issueNumber <- Attoparsec.string issueHeader
                 *> (fmap GitHub.IssueNumber <$> parseIdOrNew)
             Attoparsec.endOfLine
             title <- Attoparsec.takeTill Attoparsec.isEndOfLine
             Attoparsec.choice
                 [ ( issueNumber
-                  , ( LocalIssue { title, modificationTime, body = Nothing, comments = Map.empty }
+                  , ( LocalIssue
+                      { title, state, modificationTime, body = Nothing, comments = Map.empty }
                     , []
                     )
                   )
                   <$ parseEndOfIssue
                 , (issueNumber, )
                   <$> (first
-                       <$> (LocalIssue title modificationTime . Just <$> parseBody parseEndOfIssue)
+                       <$> (LocalIssue title state modificationTime . Just
+                            <$> parseBody parseEndOfIssue)
                        <*> parseComments parseEndOfIssue)
                   <* parseEndOfIssue
-                , (issueNumber, ) . first (LocalIssue title modificationTime Nothing)
+                , (issueNumber, ) . first (LocalIssue title state modificationTime Nothing)
                   <$> parseComments parseEndOfIssue
                   <* parseEndOfIssue]
 
@@ -225,9 +244,9 @@ commentHeader = "#Comment: "
 showText :: (Show a) => a -> Text
 showText = Text.pack . show
 
-issuesToText :: (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue) -> Text
-issuesToText
-    (openIssues, closedIssues) = mapToText openIssues <> sepLine "__" <> mapToText closedIssues
+issuesToText :: Map GitHub.IssueNumber LocalIssue -> Text
+issuesToText (Map.partition ((== GitHub.StateOpen) . state) -> (openIssues, closedIssues)) =
+    mapToText openIssues <> sepLine "__" <> mapToText closedIssues
     where
         sepLine :: Text -> Text
         sepLine c = Text.replicate 15 c <> "\n"
@@ -254,9 +273,7 @@ issuesToText
         commentToText (m, LocalComment {comment}) =
             sepLine "~" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
 
-writeIssues :: FilePath
-            -> (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
-            -> ExceptT Text IO ()
+writeIssues :: FilePath -> Map GitHub.IssueNumber LocalIssue -> ExceptT Text IO ()
 writeIssues filePath syncedIssues =
     handleExceptT (\(_e :: Exception.IOException) -> throwE errorMessage)
     $ lift

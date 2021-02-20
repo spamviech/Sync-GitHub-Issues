@@ -41,8 +41,9 @@ main = exitExceptT $ do
     remoteIssues <- if queryGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ queryIssues aut owner repository
-            $ Map.keys (fst $ fst localIssues) ++ Map.keys (fst $ snd localIssues)
-        else pure (Map.empty, Map.empty)
+            $ Map.keys
+            $ fst localIssues
+        else pure Map.empty
     syncedIssues <- if updateGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ applyRemoteChanges aut
@@ -53,7 +54,7 @@ main = exitExceptT $ do
         else lift $ print syncedIssues
     where
         -- TODO Dev-Flags so file-overwrites/api-access can be restricted
-        queryGitHub = False
+        queryGitHub = True
 
         updateGitHub = True
 
