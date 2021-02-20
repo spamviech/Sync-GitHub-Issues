@@ -151,7 +151,8 @@ parseIssues
             -> [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
             -> Attoparsec.Parser [(Maybe GitHub.IssueNumber, (LocalIssue, [LocalComment]))]
         parseManyIssues state acc =
-            (parseIssue state parseIssueSep >>= parseManyIssues state . (: acc))
+            ([] <$ Attoparsec.endOfInput)
+            <|> (parseIssue state parseIssueSep >>= parseManyIssues state . (: acc))
             <|> fmap (: acc) (parseIssue state $ Attoparsec.lookAhead parseEndSep)
             where
                 parseEndSep :: Attoparsec.Parser ()
