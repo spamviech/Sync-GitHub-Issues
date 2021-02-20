@@ -17,8 +17,7 @@
 #
 # resolver: ./custom-snapshot.yaml
 # resolver: https://example.com/snapshots/2018-01-01.yaml
-resolver:
-  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/17/2.yaml
+resolver: lts-17.4
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -41,6 +40,19 @@ packages:
 #   commit: e7b331f14bcffb8367cd58fbfc8b40ec7642100a
 #
 # extra-deps: []
+extra-deps:
+- containers-0.6.4.1@sha256:e9ca297369c207ff40ed561877c15928292b957a01c8551a7cbd50d665a03429,2520
+- directory-1.3.6.1@sha256:f2acb73dd32f696da0d8228258d37ab654b804f20117a75f25c76fd05fe2c2e5,2940
+- git-config-0.1.2@sha256:d55dd26f7803004f83c0f107eb38664ae11d8b59e72c0490d41e5aa07ec46b9e,2777
+- optparse-applicative-0.16.1.0@sha256:d410cc76e288b93d4ee7e06addc0381a7eaea43bcee0c3ced03f05cadec2f2fc,4836
+- time-1.11.1.1@sha256:bdd516b0c30b12426053186c4c38d76b05c274f3a427e654cdc1ddd23a4d6f85,6230
+- vector-0.12.2.0@sha256:6e81683c2c19b4aea58f1f453547cb03851b3cfd4031b8eb82abfa4643a13494,7953
+- binary-0.8.8.0@sha256:e9387a7ef2b34c6a23b09664c306e37cc01ae2cb4e4511a1c96ffb14008c24b0,6262
+- bytestring-0.10.12.1@sha256:98c6cebb508feea973fc5f8a00ac45a17383eff61ba31404a5344ba5504d1ee1,6088
+- parsec-3.1.14.0@sha256:2b7a30ad13b66ed4ae1c8b3b76f7b26f102f63fe4abc48663113686b0d68d2f7,4356
+- process-1.6.11.0@sha256:472c51a8903b55b1b423e7e4050facd1dce5e323fd81e5953f02ca500bb9d58c,2819
+- text-1.2.4.1@sha256:e12b468008b3c2bbc1f39bd2dcb75ba8f563c65aa5e54ee223b76463a845b6f1,7184
+- megaparsec-8.0.0@sha256:362f85e243ecbcb550e1de6e5c74ba5a50c09edaa1208c99bc5b9fd242227fc6,3808
 
 # Override default flag values for local packages and extra-deps
 # flags: {}

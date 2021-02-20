@@ -30,6 +30,6 @@ ghc-options:
 - -Wall
 
 executables:
-    Sync-Github-Issues:
+    Sync-GitHub-Issues:
         source-dirs:      src
         main:             Main.hs

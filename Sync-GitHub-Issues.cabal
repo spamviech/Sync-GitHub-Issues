@@ -17,7 +17,7 @@ build-type:     Simple
 extra-source-files:
     README.md
 
-executable Sync-Github-Issues
+executable Sync-GitHub-Issues
   main-is: Main.hs
   other-modules:
       ExitCodes
