@@ -256,7 +256,7 @@ issuesToText (Map.partition ((== GitHub.StateOpen) . state) -> (openIssues, clos
         sepLine c = Text.replicate 15 c <> "\n"
 
         mapToText :: Map GitHub.IssueNumber LocalIssue -> Text
-        mapToText = foldl' prependIssue Text.empty . Map.toAscList
+        mapToText = foldl' prependIssue Text.empty . Map.toDescList
 
         prependIssue :: Text -> (GitHub.IssueNumber, LocalIssue) -> Text
         prependIssue acc issue
