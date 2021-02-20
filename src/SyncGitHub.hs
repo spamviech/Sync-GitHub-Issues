@@ -227,11 +227,17 @@ applyRemoteChanges :: (GitHub.AuthMethod auth)
                    -> ChangeInformation
                    -> ExceptT GitHub.Error IO (Map GitHub.IssueNumber LocalIssue)
 applyRemoteChanges aut (newIssues, newComments, editIssues, editComments, unchangedIssues) = do
-    lift $ print newIssues
-    lift $ print newComments
-    lift $ print editIssues
-    lift $ print editComments
-    lift $ print unchangedIssues
+    lift $ do
+        putStrLn "\nnewIssues"
+        print newIssues
+        putStrLn "\nnewComments"
+        print newComments
+        putStrLn "\neditIssues"
+        print editIssues
+        putStrLn "\neditComments"
+        print editComments
+        putStrLn "\nunchangedIssues"
+        print unchangedIssues
     -- TODO create new issues
     -- createIssueR :: Name Owner -> Name Repo -> NewIssue -> Request RW Issue
     -- newIssue <- github aut
