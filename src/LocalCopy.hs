@@ -26,10 +26,9 @@ import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, throwE)
 import qualified Data.Attoparsec.Combinator as Attoparsec
 import qualified Data.Attoparsec.Text as Attoparsec
 import Data.Bifunctor (Bifunctor(bimap, first))
-import Data.HashMap.Strict (HashMap)
-import qualified Data.HashMap.Strict as HashMap
-import Data.Hashable (Hashable())
 import Data.List (foldl', partition)
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Maybe (isJust, fromJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -53,12 +52,18 @@ data LocalIssue =
     { title :: Text
     , modificationTime :: UTCTime
     , body :: Maybe Text
-    , comments :: HashMap Int LocalComment
+    , comments :: Map Int LocalComment
     }
     deriving (Show, Eq)
 
 data LocalComment = LocalComment { comment :: Text, modificationTime :: UTCTime }
     deriving (Show, Eq)
+
+instance Semigroup LocalComment where
+    (<>) :: LocalComment -> LocalComment -> LocalComment
+    (<>) c0@LocalComment {modificationTime = t0} c1@LocalComment {modificationTime = t1}
+        | t0 < t1 = c1
+        | otherwise = c0
 
 -- defined here for simplicity
 -- maybe move to its own module, reexporting ExceptT and MonadTrans?
@@ -71,10 +76,10 @@ readIssues
     -> ExceptT
         String
         IO
-        ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        ( (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        , (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         )
-readIssues filePath = handleExceptT (\_e -> pure ((HashMap.empty, []), (HashMap.empty, []))) $ do
+readIssues filePath = handleExceptT (\_e -> pure ((Map.empty, []), (Map.empty, []))) $ do
     modificationTime <- lift $ getModificationTime filePath
     ExceptT
         $ Attoparsec.eitherResult
@@ -105,30 +110,30 @@ Format:
 parseIssues
     :: UTCTime
     -> Attoparsec.Parser
-        ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-        , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        ( (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+        , (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
         )
 parseIssues
     modificationTime = (,) <$> parseOpenIssues <*> parseClosedIssues <* Attoparsec.endOfInput
     where
         parseOpenIssues :: Attoparsec.Parser
-                            ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                            ( Map GitHub.IssueNumber (LocalIssue, [LocalComment])
                             , [(LocalIssue, [LocalComment])]
                             )
         parseOpenIssues =
             splitKnownNew <$> parseManyIssues (parseOpenClosedSep <|> Attoparsec.endOfInput) []
 
         parseClosedIssues :: Attoparsec.Parser
-                              ( HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                              ( Map GitHub.IssueNumber (LocalIssue, [LocalComment])
                               , [(LocalIssue, [LocalComment])]
                               )
         parseClosedIssues =
-            ((HashMap.empty, []) <$ Attoparsec.endOfInput)
+            ((Map.empty, []) <$ Attoparsec.endOfInput)
             <|> (parseOpenClosedSep *> (splitKnownNew <$> parseManyIssues Attoparsec.endOfInput []))
 
-        splitKnownNew :: (Hashable k, Eq k) => [(Maybe k, v)] -> (HashMap k v, [v])
+        splitKnownNew :: (Ord k, Eq k) => [(Maybe k, v)] -> (Map k v, [v])
         splitKnownNew =
-            bimap (HashMap.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
+            bimap (Map.fromList . map (first fromJust)) (map snd) . partition (isJust . fst)
 
         parseManyIssues
             :: Attoparsec.Parser ()
@@ -147,8 +152,7 @@ parseIssues
             title <- Attoparsec.takeTill Attoparsec.isEndOfLine
             Attoparsec.choice
                 [ ( issueNumber
-                  , ( LocalIssue
-                      { title, modificationTime, body = Nothing, comments = HashMap.empty }
+                  , ( LocalIssue { title, modificationTime, body = Nothing, comments = Map.empty }
                     , []
                     )
                   )
@@ -175,7 +179,7 @@ parseIssues
             parseTillNextCommentOrIssue parseEndOfIssue
 
         parseComments
-            :: Attoparsec.Parser () -> Attoparsec.Parser (HashMap Int LocalComment, [LocalComment])
+            :: Attoparsec.Parser () -> Attoparsec.Parser (Map Int LocalComment, [LocalComment])
         parseComments parseEndOfIssue = splitKnownNew <$> Attoparsec.many' parseComment
             where
                 parseComment :: Attoparsec.Parser (Maybe Int, LocalComment)
@@ -221,16 +225,15 @@ commentHeader = "#Comment: "
 showText :: (Show a) => a -> Text
 showText = Text.pack . show
 
+issuesToText :: (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue) -> Text
 issuesToText
-    :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -> Text
-issuesToText (openIssues, closedIssues) =
-    hashmapToText openIssues <> sepLine "__" <> hashmapToText closedIssues
+    (openIssues, closedIssues) = mapToText openIssues <> sepLine "__" <> mapToText closedIssues
     where
         sepLine :: Text -> Text
         sepLine c = Text.replicate 15 c <> "\n"
 
-        hashmapToText :: HashMap GitHub.IssueNumber LocalIssue -> Text
-        hashmapToText = foldl' prependIssue Text.empty . HashMap.toList
+        mapToText :: Map GitHub.IssueNumber LocalIssue -> Text
+        mapToText = foldl' prependIssue Text.empty . Map.toAscList
 
         prependIssue :: Text -> (GitHub.IssueNumber, LocalIssue) -> Text
         prependIssue acc issue
@@ -245,14 +248,14 @@ issuesToText (openIssues, closedIssues) =
             <> title
             <> "\n"
             <> maybe Text.empty (("\n" <>) . (<> "\n")) body
-            <> mconcat (map commentToText $ HashMap.toList comments)
+            <> mconcat (map commentToText $ Map.toAscList comments)
 
         commentToText :: (Int, LocalComment) -> Text
         commentToText (m, LocalComment {comment}) =
             sepLine "~" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
 
 writeIssues :: FilePath
-            -> (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+            -> (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
             -> ExceptT Text IO ()
 writeIssues filePath syncedIssues =
     handleExceptT (\(_e :: Exception.IOException) -> throwE errorMessage)

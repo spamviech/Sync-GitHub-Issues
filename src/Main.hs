@@ -14,10 +14,11 @@ import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, withExceptT, throwE)
 import Data.Bifunctor (Bifunctor(bimap, first, second))
 import qualified Data.ByteString as ByteString
-import Data.HashMap.Strict (HashMap)
-import qualified Data.HashMap.Strict as HashMap
-import Data.Hashable (Hashable())
 import Data.List (foldl', maximumBy)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
+import Data.Proxy (Proxy(Proxy))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
@@ -53,8 +54,8 @@ main = exitExceptT $ do
     remoteIssues <- if queryGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ queryIssues aut owner repository
-            $ HashMap.keys (fst $ fst localIssues) ++ HashMap.keys (fst $ snd localIssues)
-        else pure (HashMap.empty, HashMap.empty)
+            $ Map.keys (fst $ fst localIssues) ++ Map.keys (fst $ snd localIssues)
+        else pure (Map.empty, Map.empty)
     syncedIssues <- if updateGitHub
         then withExceptT ((ConnectionError, ) . showText)
             $ applyRemoteChanges aut
@@ -80,12 +81,12 @@ queryIssues :: (GitHub.AuthMethod auth)
             -> ExceptT
                 GitHub.Error
                 IO
-                (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+                (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
 queryIssues aut owner repository knownIssueNumbers = do
     -- issuesForRepoR :: Name Owner -> Name Repo -> IssueRepoMod -> FetchCount -> Request k (Vector Issue)
     issues <- ExceptT $ github aut $ GitHub.issuesForRepoR owner repository mempty GitHub.FetchAll
-    openIssues <- HashMap.fromList <$> forM (Vector.toList issues) localIssue
-    foldM lookupIssue (openIssues, HashMap.empty) knownIssueNumbers
+    openIssues <- Map.fromList <$> forM (Vector.toList issues) localIssue
+    foldM lookupIssue (openIssues, Map.empty) knownIssueNumbers
     where
         lfNewlines :: Text -> Text
         lfNewlines = Text.replace "\r\n" "\n"
@@ -100,7 +101,7 @@ queryIssues aut owner repository knownIssueNumbers = do
                       , modificationTime = issueCommentUpdatedAt
                       }
                     )
-            comments <- fmap (HashMap.fromList . map idBodyTuple . Vector.toList)
+            comments <- fmap (Map.fromList . map idBodyTuple . Vector.toList)
                 $ ExceptT
                 $ github aut (GitHub.commentsR owner repository issueNumber GitHub.FetchAll)
             pure
@@ -113,56 +114,53 @@ queryIssues aut owner repository knownIssueNumbers = do
                   }
                 )
 
-        lookupIssue
-            :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
-            -> GitHub.IssueNumber
-            -> ExceptT
-                GitHub.Error
-                IO
-                (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+        lookupIssue :: (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
+                    -> GitHub.IssueNumber
+                    -> ExceptT
+                        GitHub.Error
+                        IO
+                        (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
         lookupIssue acc@(openIssues, closedIssues) issueNumber
-            | HashMap.member issueNumber openIssues = pure acc
+            | Map.member issueNumber openIssues = pure acc
             | otherwise = do
                 -- issueR :: Name Owner -> Name Repo -> IssueNumber -> Request k Issue
                 issue <- ExceptT (github aut $ GitHub.issueR owner repository issueNumber)
-                (openIssues, ) . flip (uncurry HashMap.insert) closedIssues <$> localIssue issue
+                (openIssues, ) . flip (uncurry Map.insert) closedIssues <$> localIssue issue
 
 type ChangeInformation =
     ( [GitHub.EditIssue]                             -- editIssueR
     , [(GitHub.NewIssue, [Text], GitHub.IssueState)] -- createIssueR, createCommentR, editIssueR
     , [(GitHub.Id GitHub.Comment, Text)]             -- editCommentR
     , [(GitHub.IssueNumber, Text)]                   -- createCommentR
-    , (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
+    , (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue) -- localUnchangedIssues
     )
 
-data LocalIssueState = LocalIssueState { state :: GitHub.IssueState, localIssue :: LocalIssue }
+data IssueState = IssueState { state :: GitHub.IssueState, issue :: LocalIssue }
     deriving (Show, Eq)
 
-instance Semigroup LocalIssueState where
-    (<>) :: LocalIssueState -> LocalIssueState -> LocalIssueState
+instance Semigroup IssueState where
+    (<>) :: IssueState -> IssueState -> IssueState
     (<>)
-        LocalIssueState
-        {localIssue = i0@LocalIssue {modificationTime = t0, comments = c0}, state = s0}
-        LocalIssueState
-        {localIssue = i1@LocalIssue {modificationTime = t1, comments = c1}, state = s1}
-        | t0 < t1 = LocalIssueState { localIssue = i1 { comments }, state = s1 }
-        | otherwise = LocalIssueState { localIssue = i0 { comments }, state = s0 }
+        IssueState {issue = i0@LocalIssue {modificationTime = t0, comments = c0}, state = s0}
+        IssueState {issue = i1@LocalIssue {modificationTime = t1, comments = c1}, state = s1}
+        | t0 < t1 = IssueState { issue = i1 { comments }, state = s1 }
+        | otherwise = IssueState { issue = i0 { comments }, state = s0 }
         where
-            comments :: HashMap Int LocalComment
-            comments = HashMap.unionWith (curry $ maximumBy compareByTime) c0 c1
+            comments :: Map Int LocalComment
+            comments = Map.unionWith (curry $ maximumBy compareByTime) c0 c1
 
             compareByTime :: LocalComment -> LocalComment -> Ordering
             compareByTime
                 LocalComment {modificationTime = tc0}
                 LocalComment {modificationTime = tc1} = compare tc0 tc1
 
-type RemoteLocalIssueState = (Maybe LocalIssueState, Maybe LocalIssueState)
+type RemoteLocalIssueState = (Maybe IssueState, Maybe IssueState)
 
 -- | Calculate required changes to achieve a synced state.
 calculateChanges
-    :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
-    -> ( (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
-       , (HashMap GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+    :: (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
+    -> ( (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
+       , (Map GitHub.IssueNumber (LocalIssue, [LocalComment]), [(LocalIssue, [LocalComment])])
        )
     -> ChangeInformation
 calculateChanges
@@ -188,19 +186,17 @@ calculateChanges
                , newIssueMilestone = Nothing
                , newIssueLabels = Nothing
                }
-             , map comment $ HashMap.elems comments ++ newIssueComments
+             , map comment $ Map.elems comments ++ newIssueComments
              , state
              ) | (LocalIssue {title, body, comments}, newIssueComments) <- newLocalIssues]
 
         newComments :: [(GitHub.IssueNumber, Text)]
         newComments = go knownLocalOpenIssues ++ go knownLocalClosedIssues
             where
-                go :: HashMap GitHub.IssueNumber (LocalIssue, [LocalComment])
+                go :: Map GitHub.IssueNumber (LocalIssue, [LocalComment])
                    -> [(GitHub.IssueNumber, Text)]
                 go knownLocalIssues =
-                    concat
-                    $ HashMap.elems
-                    $ HashMap.mapWithKey newCommentsWithIssueNumber knownLocalIssues
+                    concat $ Map.elems $ Map.mapWithKey newCommentsWithIssueNumber knownLocalIssues
 
                 newCommentsWithIssueNumber
                     :: GitHub.IssueNumber -> (a, [LocalComment]) -> [(GitHub.IssueNumber, Text)]
@@ -208,28 +204,27 @@ calculateChanges
 
         editIssues :: [GitHub.EditIssue]
         editComments :: [(GitHub.Id GitHub.Comment, Text)]
-        unchangedIssues
-            :: (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
-        (editIssues, editComments, bimap HashMap.fromList HashMap.fromList -> unchangedIssues) =
+        unchangedIssues :: (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
+        (editIssues, editComments, bimap Map.fromList Map.fromList -> unchangedIssues) =
             -- remoteOpenIssues, remoteClosedIssues
             -- knownLocalOpenIssues, knownLocalClosedIssues
             foldl' syncIssue ([], [], ([], []))
-            $ HashMap.toList
+            $ Map.toList
             $ unionsWith
                 (<>)
-                [ HashMap.map (mapRemote GitHub.StateOpen) remoteOpenIssues
-                , HashMap.map (mapRemote GitHub.StateClosed) remoteClosedIssues
-                , HashMap.map (mapLocal GitHub.StateOpen . fst) knownLocalOpenIssues
-                , HashMap.map (mapLocal GitHub.StateClosed . fst) knownLocalClosedIssues]
+                [ Map.map (mapRemote GitHub.StateOpen) remoteOpenIssues
+                , Map.map (mapRemote GitHub.StateClosed) remoteClosedIssues
+                , Map.map (mapLocal GitHub.StateOpen . fst) knownLocalOpenIssues
+                , Map.map (mapLocal GitHub.StateClosed . fst) knownLocalClosedIssues]
 
         mapRemote :: GitHub.IssueState -> LocalIssue -> RemoteLocalIssueState
-        mapRemote state = (, Nothing) . Just . LocalIssueState state
+        mapRemote state = (, Nothing) . Just . IssueState state
 
         mapLocal :: GitHub.IssueState -> LocalIssue -> RemoteLocalIssueState
-        mapLocal state = (Nothing, ) . Just . LocalIssueState state
+        mapLocal state = (Nothing, ) . Just . IssueState state
 
-        unionsWith :: (Eq k, Hashable k) => (v -> v -> v) -> [HashMap k v] -> HashMap k v
-        unionsWith f = foldl' (HashMap.unionWith f) HashMap.empty
+        unionsWith :: (Eq k, Ord k) => (v -> v -> v) -> [Map k v] -> Map k v
+        unionsWith f = foldl' (Map.unionWith f) Map.empty
 
         syncIssue :: ( [GitHub.EditIssue]
                      , [(GitHub.Id GitHub.Comment, Text)]
@@ -241,23 +236,97 @@ calculateChanges
                      , ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
                      )
         syncIssue
-            (editIssues', editComments', (unchangedOpenIssues, unchangedClosedIssues))
-            (issueNumber, (Just remoteIssue, Just localIssue)) = undefined -- TODO
+            (editIssues', editComments', unchangedIssues')
+            ( issueNumber
+            , ( Just
+                    IssueState { state = remoteState
+                               , issue = remoteIssue@LocalIssue { title = remoteTitle
+                                                                , modificationTime = remoteTime
+                                                                , body = remoteBody
+                                                                , comments = remoteComments}}
+              , Just
+                    IssueState { state = localState
+                               , issue = LocalIssue { title = localTitle
+                                                    , modificationTime = localTime
+                                                    , body = localBody
+                                                    , comments = localComments}}
+              )
+            )
+            | localTime < remoteTime
+                || (remoteState == localState
+                    && remoteTitle == localTitle
+                    && remoteBody == localBody) =
+                ( editIssues'
+                , editComments'' ++ editComments'
+                , addUnchangedIssue
+                      issueNumber
+                      remoteState
+                      remoteIssue { comments }
+                      unchangedIssues'
+                )
+            | otherwise =
+                (editIssue : editIssues', editComments'' ++ editComments', unchangedIssues')
+            where
+                editComments'' :: [(GitHub.Id GitHub.Comment, Text)]
+                comments :: Map Int LocalComment
+                (editComments'', Map.fromList -> comments) =
+                    foldl' syncComment ([], [])
+                    $ Map.toList
+                    $ Map.unionWith
+                        (<>)
+                        (Map.map ((, Nothing) . Just) remoteComments)
+                        (Map.map ((Nothing, ) . Just) localComments)
+
+                syncComment :: ([(GitHub.Id GitHub.Comment, Text)], [(Int, LocalComment)])
+                            -> (Int, (Maybe LocalComment, Maybe LocalComment))
+                            -> ([(GitHub.Id GitHub.Comment, Text)], [(Int, LocalComment)])
+                syncComment
+                    acc
+                    ( commentId
+                    , ( Just
+                            remoteComment@LocalComment
+                            {comment = remoteText, modificationTime = remoteCommentTime}
+                      , Just
+                            LocalComment {comment = localText, modificationTime = localCommentTime}
+                      )
+                    )
+                    | localCommentTime < remoteCommentTime || remoteText == localText =
+                        second ((commentId, remoteComment) :) acc
+                    | otherwise = first ((GitHub.mkId Proxy commentId, localText) :) acc
+                syncComment acc (commentId, (Just remoteComment, Nothing)) =
+                    second ((commentId, remoteComment) :) acc
+                syncComment acc (_commentId, (Nothing, _localComment)) = acc  -- deleted comment?
+
+                editIssue :: GitHub.EditIssue
+                editIssue =
+                    GitHub.EditIssue
+                    { editIssueTitle = Just localTitle
+                    , editIssueBody = Just $ fromMaybe "" localBody
+                    , editIssueAssignees = Nothing
+                    , editIssueState = Just localState
+                    , editIssueMilestone = Nothing
+                    , editIssueLabels = Nothing
+                    }
         syncIssue
             (editIssues', editComments', unchangedIssues')
-            (issueNumber, (Just LocalIssueState {state, localIssue}, Nothing)) =
-            (editIssues', editComments', addNewRemoteIssue unchangedIssues')
-            where
-                addNewRemoteIssue
-                    :: ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
-                    -> ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
-                addNewRemoteIssue = bimapPart ((issueNumber, localIssue) :)
-
-                bimapPart :: (a -> a) -> (a, a) -> (a, a)
-                bimapPart
-                    | GitHub.StateOpen <- state = first
-                    | GitHub.StateClosed <- state = second
+            (issueNumber, (Just IssueState {state, issue}, Nothing)) =
+            ( editIssues'
+            , editComments'
+            , addUnchangedIssue issueNumber state issue unchangedIssues'
+            )
         syncIssue acc (_issueNumber, (Nothing, _localIssue)) = acc  -- deleted issue?
+
+        addUnchangedIssue
+            :: GitHub.IssueNumber
+            -> GitHub.IssueState
+            -> LocalIssue
+            -> ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
+            -> ([(GitHub.IssueNumber, LocalIssue)], [(GitHub.IssueNumber, LocalIssue)])
+        addUnchangedIssue issueNumber state issue = bimapPart state ((issueNumber, issue) :)
+
+        bimapPart :: GitHub.IssueState -> (a -> a) -> (a, a) -> (a, a)
+        bimapPart GitHub.StateOpen = first
+        bimapPart GitHub.StateClosed = second
 
 -- | Apply changes from 'calculateChanges' to /github.com/ and return the updated 'LocalIssues's.
 applyRemoteChanges
@@ -267,7 +336,7 @@ applyRemoteChanges
     -> ExceptT
         GitHub.Error
         IO
-        (HashMap GitHub.IssueNumber LocalIssue, HashMap GitHub.IssueNumber LocalIssue)
+        (Map GitHub.IssueNumber LocalIssue, Map GitHub.IssueNumber LocalIssue)
 applyRemoteChanges aut changes = do
     -- TODO create new issues
     -- createIssueR :: Name Owner -> Name Repo -> NewIssue -> Request RW Issue
