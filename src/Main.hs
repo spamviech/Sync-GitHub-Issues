@@ -14,8 +14,6 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import ExitCodes (ExitCode(..), exitWith)
 import qualified GitHub
-import Lens.Micro (_5)
-import Lens.Micro.Extras (view)
 import LocalCopy (readIssues, writeIssues, handleExceptT, showText)
 import Repository (Repository(..), parseRepositoryInformation)
 import SyncGitHub (queryIssues, calculateChanges, applyRemoteChanges)
@@ -38,24 +36,11 @@ main = exitExceptT $ do
     Repository {owner, repository, filePath} <- lift parseRepositoryInformation
     lift $ putStrLn $ "owner: " ++ show owner ++ ", repository: " ++ show repository
     localIssues <- withExceptT ((ParseFileError, ) . Text.pack) $ readIssues filePath
-    remoteIssues <- if queryGitHub
-        then withExceptT ((ConnectionError, ) . showText)
-            $ queryIssues aut owner repository
-            $ Map.keys
-            $ fst localIssues
-        else pure Map.empty
-    syncedIssues <- if updateGitHub
-        then withExceptT ((ConnectionError, ) . showText)
-            $ applyRemoteChanges aut
-            $ calculateChanges remoteIssues localIssues
-        else pure $ view _5 $ calculateChanges remoteIssues localIssues
-    if writeToFile
-        then withExceptT (ParseFileError, ) $ writeIssues filePath syncedIssues
-        else lift $ print syncedIssues
-    where
-        -- TODO Dev-Flags so file-overwrites/api-access can be restricted
-        queryGitHub = True
-
-        updateGitHub = True
-
-        writeToFile = False
+    remoteIssues <- withExceptT ((ConnectionError, ) . showText)
+        $ queryIssues aut owner repository
+        $ Map.keys
+        $ fst localIssues
+    syncedIssues <- withExceptT ((ConnectionError, ) . showText)
+        $ applyRemoteChanges aut owner repository
+        $ calculateChanges remoteIssues localIssues
+    withExceptT (ParseFileError, ) $ writeIssues filePath syncedIssues

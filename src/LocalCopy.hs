@@ -36,6 +36,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Time.Clock (UTCTime())
 import qualified GitHub
+import qualified GitHub.Data.Id as GitHub
 import System.Directory (getModificationTime)
 import System.IO (Handle, utf8, hSetEncoding, hSetNewlineMode, NewlineMode(..), Newline(..)
                 , withFile, IOMode(ReadMode, WriteMode))
@@ -54,7 +55,7 @@ data LocalIssue =
     , state :: GitHub.IssueState
     , modificationTime :: UTCTime
     , body :: Maybe Text
-    , comments :: Map Int LocalComment
+    , comments :: Map (GitHub.Id GitHub.Comment) LocalComment
     }
     deriving (Show, Eq)
 
@@ -68,7 +69,7 @@ instance Semigroup LocalIssue where
         | t0 < t1 = i1 { comments, state = s1 }
         | otherwise = i0 { comments, state = s0 }
         where
-            comments :: Map Int LocalComment
+            comments :: Map (GitHub.Id GitHub.Comment) LocalComment
             comments = Map.unionWith (<>) c0 c1
 
 data LocalComment = LocalComment { comment :: Text, modificationTime :: UTCTime }
@@ -199,14 +200,16 @@ parseIssues
             parseTillNextCommentOrIssue parseEndOfIssue
 
         parseComments
-            :: Attoparsec.Parser () -> Attoparsec.Parser (Map Int LocalComment, [LocalComment])
+            :: Attoparsec.Parser ()
+            -> Attoparsec.Parser (Map (GitHub.Id GitHub.Comment) LocalComment, [LocalComment])
         parseComments parseEndOfIssue = splitKnownNew <$> Attoparsec.many' parseComment
             where
-                parseComment :: Attoparsec.Parser (Maybe Int, LocalComment)
+                parseComment :: Attoparsec.Parser (Maybe (GitHub.Id GitHub.Comment), LocalComment)
                 parseComment = do
                     parseCommentSep
                     commentNumber <- Attoparsec.string commentHeader *> parseIdOrNew
-                    (commentNumber, ) . flip LocalComment modificationTime
+                    Attoparsec.endOfLine
+                    (GitHub.Id <$> commentNumber, ) . flip LocalComment modificationTime
                         <$> parseTillNextCommentOrIssue parseEndOfIssue
 
         parseIdOrNew :: Attoparsec.Parser (Maybe Int)
@@ -270,8 +273,8 @@ issuesToText (Map.partition ((== GitHub.StateOpen) . state) -> (openIssues, clos
             <> maybe Text.empty (("\n" <>) . (<> "\n")) body
             <> mconcat (map commentToText $ Map.toAscList comments)
 
-        commentToText :: (Int, LocalComment) -> Text
-        commentToText (m, LocalComment {comment}) =
+        commentToText :: (GitHub.Id GitHub.Comment, LocalComment) -> Text
+        commentToText (GitHub.Id m, LocalComment {comment}) =
             sepLine "~" <> commentHeader <> showText m <> "\n" <> comment <> "\n"
 
 writeIssues :: FilePath -> Map GitHub.IssueNumber LocalIssue -> ExceptT Text IO ()
