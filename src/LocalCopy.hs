@@ -20,7 +20,7 @@ module LocalCopy
   , showText
   ) where
 
-import Control.Applicative (Alternative((<|>)))
+import Control.Applicative (Alternative((<|>)), optional)
 import qualified Control.Exception as Exception
 import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Except (ExceptT(ExceptT), runExceptT, throwE)
@@ -154,12 +154,15 @@ parseIssues
         parseManyIssues state acc =
             ([] <$ Attoparsec.endOfInput)
             <|> (parseIssue state parseIssueSep >>= parseManyIssues state . (: acc))
-            <|> fmap (: acc) (parseIssue state $ Attoparsec.lookAhead parseEndSep)
+            <|> fmap (: acc) (parseIssue state parseEndSep)
             where
                 parseEndSep :: Attoparsec.Parser ()
                 parseEndSep = case state of
-                    GitHub.StateOpen -> parseOpenClosedSep <|> Attoparsec.endOfInput
-                    GitHub.StateClosed -> Attoparsec.endOfInput
+                    GitHub.StateOpen -> Attoparsec.lookAhead parseOpenClosedSep
+                        <|> (optional Attoparsec.endOfLine
+                             *> Attoparsec.lookAhead Attoparsec.endOfInput)
+                    GitHub.StateClosed
+                     -> optional Attoparsec.endOfLine *> Attoparsec.lookAhead Attoparsec.endOfInput
 
         parseIssue :: GitHub.IssueState
                    -> Attoparsec.Parser ()
